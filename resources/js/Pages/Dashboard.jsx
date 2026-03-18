@@ -9,7 +9,77 @@ const ChevronIcon = ({ className }) => (
     </svg>
 )
 
-export default function Dashboard({ auth, users = [], isMasterAdmin }) {
+export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }) {
+
+    // New test data for sorting verification
+    const users = [
+        {
+            id: 1,
+            name: 'Master Admin',
+            email: 'admin@gmail.com',
+            username: 'admin',
+            role: 'admin',
+            status: 'active',
+            permissions: ['create', 'read', 'update', 'delete'],
+            location: 'Lipa City, Batangas',
+            joinedDate: 'March 15, 2026'
+        },
+        {
+            id: 2,
+            name: 'Maria Santos',
+            email: 'maria@test.com',
+            username: 'mariasantos',
+            role: 'staff',
+            status: 'active',
+            permissions: ['create', 'read', 'update'],
+            location: 'Lipa City, Batangas',
+            joinedDate: 'February 10, 2026'
+        },
+        {
+            id: 3,
+            name: 'Juan Dela Cruz',
+            email: 'juan@test.com',
+            username: 'juandelacruz',
+            role: 'customer',
+            status: 'active',
+            permissions: ['read'],
+            location: 'Lipa City, Batangas',
+            joinedDate: 'January 05, 2026'
+        },
+        {
+            id: 4,
+            name: 'Elena Reyes',
+            email: 'elena@test.com',
+            username: 'elenareyes',
+            role: 'customer',
+            status: 'active',
+            permissions: ['read'],
+            location: 'Lipa City, Batangas',
+            joinedDate: 'March 01, 2026'
+        },
+        {
+            id: 5,
+            name: 'Ricardo Gomez',
+            email: 'ricardo@test.com',
+            username: 'ricardogomez',
+            role: 'staff',
+            status: 'active',
+            permissions: ['create', 'read', 'update'],
+            location: 'Lipa City, Batangas',
+            joinedDate: 'December 20, 2025'
+        },
+        {
+            id: 6,
+            name: 'Test Customer',
+            email: 'ccc@test.com',
+            username: 'ccctest',
+            role: 'customer',
+            status: 'active',
+            permissions: ['read'],
+            location: 'Lipa City, Batangas',
+            joinedDate: 'March 17, 2026'
+        }
+    ];
 
     const currentUser = auth?.user || null
     const [modal, setModal] = useState(null)
@@ -18,6 +88,17 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
     const [searchTerm, setSearchTerm] = useState('') // Search term for filtering
     const [selectedRole, setSelectedRole] = useState('All') // Role filter state
     const [roleMenuOpen, setRoleMenuOpen] = useState(false) // Role dropdown toggle state
+    const [sortOrder, setSortOrder] = useState('newest') // 'newest' or 'oldest' for Joined Date
+    const [dateSortMenuOpen, setDateSortMenuOpen] = useState(false) // Date sort dropdown toggle state
+    const [selectedUserIds, setSelectedUserIds] = useState([]) // Track selected user IDs
+
+    // Role Management State
+    const [selectedRoleIds, setSelectedRoleIds] = useState([]) // Track selected role IDs
+    const [roles] = useState([
+        { id: 1, name: 'Admin', description: 'Full system access', permissions: 'create, read, update, delete' },
+        { id: 2, name: 'Staff', description: 'Limited administrative access', permissions: 'create, read, update' },
+        { id: 3, name: 'Customer', description: 'Basic user access', permissions: 'read, update' },
+    ])
 
     const { data, setData, post, patch, delete: destroy, processing, reset, clearErrors } = useForm({
         name: '',
@@ -29,11 +110,11 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
     })
 
     // Strict visibility logic constants
-    const authUser = auth.user;
+    const authUser = auth?.user || {};
     const authPermissions = Array.isArray(authUser.permissions) ? authUser.permissions : [];
     
     // Master Admin identity check - hardcoded override
-    const isAdminIdentity = auth.user.email === 'admin@gmail.com';
+    const isAdminIdentity = auth?.user?.email === 'admin@gmail.com';
 
     // The Gatekeeper: Can this person manage others?
     const canManagePermissions = isAdminIdentity || authPermissions.includes('update');
@@ -150,6 +231,7 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
 
     const openModal = (type, user = null) => {
         setSelectedUser(user)
+        
         if (user) {
             // Master Admin gets all permissions regardless of database
             const isAdminUser = user.email === 'admin@gmail.com';
@@ -165,6 +247,8 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                 role: userRole,
                 permissions: userPermissions,
             })
+        } else {
+            reset()
         }
         setModal(type)
     }
@@ -245,34 +329,83 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
         REAL-TIME SEARCH FILTERING
     -------------------------------------------*/
     const filteredUsers = users.filter((user) => {
-        // 1. Force the role to lowercase and trim spaces
-        const actualRole = user.role?.toLowerCase().trim();
-        const targetFilter = selectedRole?.toLowerCase().trim();
+        // 1. Define strict role strings
+        const isMaster = user.email === 'admin@gmail.com';
+        const userRole = isMaster ? 'admin' : user.role?.toLowerCase().trim();
+        const activeFilter = selectedRole?.toLowerCase().trim();
 
-        // 2. Identify the Master Admin (Always passes 'admin' and 'all' filters)
-        const isMasterAdmin = user.email === 'admin@gmail.com';
-
-        // 3. Define the role match
-        let roleMatches = false;
-        if (targetFilter === 'all') {
-            roleMatches = true;
-        } else if (targetFilter === 'admin') {
-            roleMatches = (isMasterAdmin || actualRole === 'admin');
-        } else if (targetFilter === 'staff') {
-            roleMatches = (!isMasterAdmin && actualRole === 'staff');
-        } else if (targetFilter === 'customer') {
-            roleMatches = (!isMasterAdmin && actualRole === 'customer');
-        }
-
-        // 4. Define the search match
+        // 2. Search match (Name or Email)
         const matchesSearch = searchTerm === '' || (
             user.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
             user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
             (user.location && user.location.toLowerCase().includes(searchTerm.toLowerCase()))
         );
 
-        return roleMatches && matchesSearch;
+        // 3. Strict Role match
+        const matchesRole = activeFilter === 'all' || userRole === activeFilter;
+
+        return matchesRole && matchesSearch;
     });
+
+    // Sort users by Joined Date
+    const finalDisplayUsers = [...filteredUsers].sort((a, b) => {
+        const dateA = new Date(a.joinedDate || 'March 15, 2026');
+        const dateB = new Date(b.joinedDate || 'March 15, 2026');
+        return sortOrder === 'newest' ? dateB - dateA : dateA - dateB;
+    });
+
+    // Checkbox selection handlers
+    const handleSelectAll = (e) => {
+        if (e.target.checked) {
+            setSelectedUserIds(finalDisplayUsers.map(u => u.id));
+        } else {
+            setSelectedUserIds([]);
+        }
+    };
+
+    const handleSelectUser = (id) => {
+        setSelectedUserIds(prev => 
+            prev.includes(id) ? prev.filter(userId => userId !== id) : [...prev, id]
+        );
+    };
+
+    // Role selection handlers
+    const handleSelectAllRoles = (e) => {
+        if (e.target.checked) {
+            setSelectedRoleIds(roles.map(r => r.id));
+        } else {
+            setSelectedRoleIds([]);
+        }
+    };
+
+    const handleSelectRole = (id) => {
+        setSelectedRoleIds(prev => 
+            prev.includes(id) ? prev.filter(roleId => roleId !== id) : [...prev, id]
+        );
+    };
+
+    const handleBulkDelete = () => {
+        // Filter out the Master Admin by email even if they are selected
+        const usersToDelete = selectedUserIds.filter(id => {
+            const user = users.find(u => u.id === id);
+            return user && user.email !== 'admin@gmail.com';
+        });
+
+        if (usersToDelete.length === 0) {
+            alert('Cannot delete Master Admin user.');
+            return;
+        }
+
+        if (window.confirm(`Are you sure you want to delete ${usersToDelete.length} users?`)) {
+            setUsers(prev => prev.filter(user => !usersToDelete.includes(user.id)));
+            setSelectedUserIds([]); // This will make the Delete button disappear automatically
+            
+            // Show success feedback
+            setTimeout(() => {
+                alert('Users deleted successfully.');
+            }, 100);
+        }
+    };
 
     /* ------------------------------------------
         CRUD ACTIONS
@@ -308,25 +441,19 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
         })
     }
 
-    const getRoleLabel = (user) => {
-        if (user.email === 'admin@gmail.com') return 'Admin'
-        if (user.role === 'admin') return 'Staff'
-        if (user.role === 'staff') return 'Customer'
-        return 'Other'
-    }
-
     return (
-        <AuthenticatedLayout
-            user={currentUser}
-            header={<h2 className="text-xl font-semibold text-gray-800">User Management</h2>}
-        >
-            <Head title="Admin Dashboard" />
+        <>
+            <AuthenticatedLayout
+                user={currentUser}
+                header={<h2 className="text-xl font-semibold text-gray-800">User Management</h2>}
+            >
+                <Head title="Admin Dashboard" />
 
             <div className="py-12">
-                <div className="mx-auto max-w-7xl sm:px-6 lg:px-8">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     
-                    {/* Top Control Bar */}
-                    <div className="flex justify-between items-center mb-6 bg-white p-4 rounded-lg shadow-sm border border-gray-100">
+                    {/* Header - Fixed Layout: Left (Search) | Center (Filters) | Right (Actions) */}
+                    <div className="flex items-center justify-between w-full mb-6 px-2 bg-white p-4 rounded-lg shadow-sm border border-gray-100">
                         {/* Left: Search Bar */}
                         <div className="flex-1 max-w-md">
                             <input 
@@ -334,28 +461,28 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
                                 placeholder="Search items..." 
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                                className="w-full h-10 px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
                             />
                         </div>
-                        
-                        {/* Middle: Filter Dropdowns */}
-                        <div className="flex items-center space-x-4">
-                            <div className="relative role-dropdown">
+
+                        {/* Center: Filters */}
+                        <div className="flex items-center gap-3">
+                            {/* Permissions Dropdown */}
+                            <div className="relative">
                                 <button 
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         setRoleMenuOpen(prev => !prev);
                                     }}
-                                    className="flex items-center justify-between w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                                    className="flex items-center justify-between w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white h-10 min-w-[140px]"
                                 >
-                                    <span>
-                                        Permissions: {selectedRole === 'All' ? 'All' : selectedRole}
+                                    <span className="text-sm">
+                                        {selectedRole === 'All' ? 'Permissions: All' : `Permissions: ${selectedRole}`}
                                     </span>
                                     <ChevronIcon className="w-4 h-4 text-gray-400 ml-2" />
                                 </button>
-                                {/* Dropdown Menu */}
                                 {roleMenuOpen && (
-                                    <div className="absolute right-0 mt-2 w-32 bg-white shadow-lg rounded-md z-20 ring-1 ring-black ring-opacity-5">
+                                    <div className="absolute top-full left-0 mt-1 w-40 bg-white shadow-lg rounded-md z-20 ring-1 ring-black ring-opacity-5">
                                         <div className="py-1">
                                             <button 
                                                 onClick={(e) => {
@@ -401,23 +528,54 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                     </div>
                                 )}
                             </div>
+                            
+                            {/* Date Sort Dropdown */}
                             <div className="relative">
-                                <button className="flex items-center justify-between w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white">
-                                    <span>Joined Date</span>
+                                <button 
+                                    onClick={() => setDateSortMenuOpen(!dateSortMenuOpen)}
+                                    className="flex items-center justify-between w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white h-10 min-w-[140px]"
+                                >
+                                    <span className="text-sm">Joined: {sortOrder === 'newest' ? 'Newest' : 'Oldest'}</span>
                                     <ChevronIcon className="w-4 h-4 text-gray-400 ml-2" />
                                 </button>
+                                {dateSortMenuOpen && (
+                                    <div className="absolute top-full left-0 mt-1 w-32 bg-white shadow-lg rounded-md z-20 ring-1 ring-black ring-opacity-5">
+                                        <div className="py-1">
+                                            <button 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSortOrder('newest');
+                                                    setDateSortMenuOpen(false);
+                                                }} 
+                                                className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
+                                            >
+                                                Newest First
+                                            </button>
+                                            <button 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSortOrder('oldest');
+                                                    setDateSortMenuOpen(false);
+                                                }} 
+                                                className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
+                                            >
+                                                Oldest First
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
-                        
+
                         {/* Right: Action Buttons */}
-                        <div className="flex items-center space-x-3">
-                            <button className="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md font-bold hover:bg-gray-200 transition">
+                        <div className="flex items-center gap-3">
+                            <button className="h-10 px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md font-medium hover:bg-gray-200 transition-colors flex items-center">
                                 Export
                             </button>
                             {canCreate && (
                                 <button
                                     onClick={() => openModal('create')}
-                                    className="px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-bold hover:bg-indigo-700 transition"
+                                    className="h-10 px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-medium hover:bg-indigo-700 transition-colors flex items-center"
                                 >
                                     + New User
                                 </button>
@@ -425,7 +583,7 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                         </div>
                     </div>
 
-                    {/* Table Container */}
+                    {/* Table Container - Improved spacing and consistency */}
                     {canRead ? (
                         <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
                             <table className="min-w-full divide-y divide-gray-200">
@@ -433,32 +591,89 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                     <tr>
                                         {/* Checkbox Column - Master Admin Only */}
                                         {isMasterAdmin && (
-                                            <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">
-                                                <input type="checkbox" className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" />
+                                            <th className="px-6 py-4 text-left">
+                                                <input 
+                                                    type="checkbox" 
+                                                    className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                                                    onChange={handleSelectAll}
+                                                    checked={selectedUserIds.length === finalDisplayUsers.length && finalDisplayUsers.length > 0}
+                                                />
                                             </th>
                                         )}
-                                        <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">Full Name</th>
-                                        <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">Email Address</th>
-                                        <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">Location</th>
-                                        <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">Status</th>
-                                        <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">Joined Date</th>
-                                        {isMasterAdmin && (
-                                            <th className="px-6 py-4 text-left text-xs uppercase text-gray-500 font-bold tracking-wider">Permissions</th>
+
+                                        {selectedUserIds.length > 0 ? (
+                                            /* Contextual Action Bar - Improved styling */
+                                            <th colSpan="7" className="px-6 py-4 bg-indigo-50 border-l border-gray-200">
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-4">
+                                                        <span className="text-indigo-700 font-semibold text-sm">{selectedUserIds.length} Selected</span>
+                                                        <div className="h-4 w-px bg-gray-300"></div>
+                                                        <button 
+                                                            onClick={handleBulkDelete} 
+                                                            className="text-red-600 font-semibold text-sm hover:text-red-800 transition-colors flex items-center gap-2"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                            </svg>
+                                                            Delete Selected
+                                                        </button>
+                                                    </div>
+                                                    <button 
+                                                        onClick={() => setSelectedUserIds([])} 
+                                                        className="text-gray-500 text-sm hover:text-gray-700 transition-colors"
+                                                    >
+                                                        Clear selection
+                                                    </button>
+                                                </div>
+                                            </th>
+                                        ) : (
+                                            /* Standard Headers - Improved typography and spacing */
+                                            <>
+                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Full Name</th>
+                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Email Address</th>
+                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Location</th>
+                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                                    <button 
+                                                        onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                                                        className="flex items-center gap-2 hover:text-gray-700 focus:outline-none transition-colors"
+                                                    >
+                                                        <span>Joined Date</span>
+                                                        {sortOrder === 'asc' ? (
+                                                            <svg className="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                                                                <path fillRule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 001.414 1.414l4-4a1 1 0 000-1.414l-4-4a1 1 0 00-1.414 0z" clipRule="evenodd" />
+                                                            </svg>
+                                                        ) : (
+                                                            <svg className="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                                                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                                                            </svg>
+                                                        )}
+                                                    </button>
+                                                </th>
+                                                {isMasterAdmin && (
+                                                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Permissions</th>
+                                                )}
+                                                <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+                                            </>
                                         )}
-                                        <th className="px-6 py-4 text-right text-xs uppercase text-gray-500 font-bold tracking-wider">Actions</th>
                                     </tr>
                                 </thead>
                             <tbody className="bg-white divide-y divide-gray-100">
-                                {filteredUsers.map((user) => {
+                                {finalDisplayUsers.map((user) => {
                                     // Sanitize permissions data to always be an array
                                     const userPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {});
                                     
                                     return (
-                                        <tr key={user.id} className="hover:bg-gray-50 transition">
+                                        <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                                             {/* Checkbox Column - Master Admin Only */}
                                             {isMasterAdmin && (
                                                 <td className="px-6 py-4 whitespace-nowrap">
-                                                    <input type="checkbox" className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" />
+                                                    <input 
+                                                        type="checkbox" 
+                                                        className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                                                        onChange={() => handleSelectUser(user.id)}
+                                                        checked={selectedUserIds.includes(user.id)}
+                                                    />
                                                 </td>
                                             )}
                                             
@@ -466,11 +681,11 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <div className="flex items-center">
                                                     <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center mr-3">
-                                                        <span className="text-indigo-600 font-bold text-sm">
+                                                        <span className="text-indigo-600 font-semibold text-sm">
                                                             {user.name.charAt(0).toUpperCase()}
                                                         </span>
                                                     </div>
-                                                    <div className="text-sm font-semibold text-gray-900">{user.name}</div>
+                                                    <div className="text-sm font-medium text-gray-900">{user.name}</div>
                                                 </div>
                                             </td>
                                             
@@ -481,7 +696,7 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                             
                                             {/* Location */}
                                             <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">Lipa City, Batangas</div>
+                                                <div className="text-sm text-gray-600">{user.location}</div>
                                             </td>
                                             
                                             {/* Status */}
@@ -489,54 +704,51 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                                 <div className="flex items-center">
                                                     {/* Status Dot */}
                                                     <div className={`w-2 h-2 rounded-full mr-2 ${
-                                                        user.email === 'admin@gmail.com' || (user.status || 'active') === 'active' 
-                                                            ? 'bg-green-500' 
-                                                            : 'bg-red-500'
+                                                        user.status === 'active' ? 'bg-green-400' : 
+                                                        user.status === 'pending' ? 'bg-yellow-400' : 'bg-gray-400'
                                                     }`}></div>
-                                                    {/* Status Badge */}
-                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] uppercase font-bold ${
-                                                        user.email === 'admin@gmail.com' || (user.status || 'active') === 'active' 
-                                                            ? 'bg-green-100 text-green-700' 
-                                                            : 'bg-red-100 text-red-700'
+                                                    <span className={`text-sm font-medium ${
+                                                        user.status === 'active' ? 'text-green-800' : 
+                                                        user.status === 'pending' ? 'text-yellow-800' : 'text-gray-800'
                                                     }`}>
-                                                        {(user.email === 'admin@gmail.com' || (user.status || 'active') === 'active') ? 'Active' : 'Inactive'}
+                                                        {user.status.charAt(0).toUpperCase() + user.status.slice(1)}
                                                     </span>
                                                 </div>
                                             </td>
                                             
                                             {/* Joined Date */}
                                             <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">March 15, 2026</div>
+                                                <div className="text-sm text-gray-600">{user.joinedDate}</div>
                                             </td>
                                             
-                                            {/* Permissions Column - Master Admin Only */}
+                                            {/* Permissions - Master Admin Only */}
                                             {isMasterAdmin && (
                                                 <td className="px-6 py-4 whitespace-nowrap">
-                                                    <span className={`px-3 py-1 text-xs rounded-full font-bold ${
-                                                        // Strictly follow user.role from database
-                                                        user.role?.toLowerCase().trim() === 'admin'
-                                                            ? 'bg-purple-100 text-purple-700'  // Admin = Purple
-                                                            : user.role?.toLowerCase().trim() === 'staff'
-                                                            ? 'bg-blue-100 text-blue-700'       // Staff = Blue
-                                                            : 'bg-gray-100 text-gray-700'         // Customer = Gray
-                                                    }`}>
-                                                        {/* Strictly follow user.role from database */}
-                                                        {user.role?.toLowerCase().trim() === 'admin' ? 'Admin' : 
-                                                         user.role?.toLowerCase().trim() === 'staff' ? 'Staff' : 
-                                                         user.role?.toLowerCase().trim() === 'customer' ? 'Customer' : 'Unknown'}
-                                                    </span>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {userPermissions.map((perm, index) => (
+                                                            <span 
+                                                                key={index}
+                                                                className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getBadgeStyle(user.role)}`}
+                                                            >
+                                                                {perm}
+                                                            </span>
+                                                        ))}
+                                                    </div>
                                                 </td>
                                             )}
-                                            {/* Actions Column */}
-                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                <div className="dropdown-menu relative inline-block text-left">
-                                                    {/* Ellipsis Button */}
+                                            
+                                            {/* Actions */}
+                                            <td className="px-6 py-4 whitespace-nowrap text-right">
+                                                <div className="relative">
                                                     <button 
-                                                        onClick={() => toggleMenu(user.id)}
-                                                        className="flex items-center justify-center w-8 h-8 text-gray-400 hover:text-gray-600 focus:outline-none focus:text-gray-600 transition-colors rounded-full hover:bg-gray-100"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setOpenMenuId(openMenuId === user.id ? null : user.id);
+                                                        }}
+                                                        className="p-1 text-gray-400 hover:text-gray-600 transition-colors rounded-md hover:bg-gray-100"
                                                     >
-                                                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                                            <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"/>
+                                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
                                                         </svg>
                                                     </button>
                                                     
@@ -622,16 +834,64 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                 </div>
                             </div>
                         </div>
+                    )}
+
+                    {/* Horizontal Divider */}
+                    <hr className="my-10 border-gray-200" />
+
+                    {/* Role Management Section */}
+                    <div>
+                        {/* Role Management Header */}
+                        <div className="flex justify-between items-center w-full mb-6">
+                            <h3 className="text-lg font-bold text-gray-800">### Role Management</h3>
+                            <button className="h-10 px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-medium hover:bg-indigo-700 transition-colors flex items-center">
+                                + New Role
+                            </button>
                         </div>
+
+                        {/* Role Management Table */}
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Role Name</th>
+                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
+                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-100">
+                                    {roles.map((role) => (
+                                        <tr key={role.id} className="hover:bg-gray-50 transition-colors">
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm font-medium text-gray-900">{role.name}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm text-gray-600">{role.description}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
+                                                <button className="text-indigo-600 hover:text-indigo-900 font-medium">Edit</button>
+                                                <span className="mx-2 text-gray-300">|</span>
+                                                <button className="text-red-600 hover:text-red-900 font-medium">Delete</button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                     ) : (
                         <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-8 text-center">
-                            <p className="text-gray-600 text-lg">You do not have permission to view this data.</p>
+                            <div className="text-gray-500">
+                                <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                                </svg>
+                                <h3 className="mt-2 text-sm font-medium text-gray-900">No access to user data</h3>
+                                <p className="mt-1 text-sm text-gray-500">You don't have permission to view user information.</p>
+                            </div>
                         </div>
                     )}
-                </div>
-            </div>
 
-            {/* MODALS */}
+            {/* Modal - Fixed positioning and structure */}
             {modal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50" onClick={closeModal}>
                     <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full m-4" onClick={(e) => e.stopPropagation()}>
@@ -668,7 +928,7 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                 {isMasterAdmin && (
                                     <div className="pt-4 space-y-4">
                                         <label className="block text-sm font-bold text-gray-700">Assign Role</label>
-                                        <select value={data.role} onChange={e => handleRoleChange(e.target.value)} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500">
+                                        <select value={data.role} onChange={handleRoleChange} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500">
                                             <option value="staff">Customer</option>
                                             <option value="admin">Staff</option>
                                             <option value="customer">Other</option>
@@ -681,7 +941,6 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                                     <label key={perm} className="flex items-center gap-2">
                                                         <input 
                                                             type="checkbox"
-                                                            // Ensure strict boolean to avoid "uncontrolled" warning
                                                             checked={!!(data.permissions && data.permissions.includes(perm))}
                                                             onChange={(e) => {
                                                                 const checked = e.target.checked;
@@ -698,18 +957,14 @@ export default function Dashboard({ auth, users = [], isMasterAdmin }) {
                                         </div>
                                     </div>
                                 )}
-
-                                <div className="flex justify-end space-x-4 pt-6 border-t border-gray-100 mt-6">
-                                    <button type="button" onClick={closeModal} className="text-gray-500 font-bold hover:text-gray-700">Cancel</button>
-                                    <button type="submit" disabled={processing} className="bg-indigo-600 text-white px-8 py-2 rounded-lg font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition disabled:opacity-50">
-                                        {modal === 'approve' ? 'Approve Now' : 'Save User'}
-                                    </button>
-                                </div>
                             </form>
                         )}
                     </div>
                 </div>
             )}
-        </AuthenticatedLayout>
-    )
-}
+                    {/* Role Management Table goes here inside the main div */}
+                    </div> {/* Closes max-w-7xl */}
+                </div> {/* Closes py-12 */}
+            </AuthenticatedLayout>
+        );
+    }

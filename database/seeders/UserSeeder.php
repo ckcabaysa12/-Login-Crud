@@ -48,5 +48,18 @@ class UserSeeder extends Seeder
                 'create' => false, 'read' => true, 'update' => true, 'delete' => false,
             ],
         ]);
+
+        // 4. Test Customer User
+        User::create([
+            'name' => 'Test Customer',
+            'email' => 'ccc@test.com',
+            'username' => 'ccctest',
+            'password' => Hash::make('password'),
+            'role' => 'customer',
+            'status' => 'active',
+            'permissions' => [
+                'create' => false, 'read' => true, 'update' => false, 'delete' => false,
+            ],
+        ]);
     }
 }
