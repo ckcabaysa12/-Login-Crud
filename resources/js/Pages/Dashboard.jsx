@@ -266,8 +266,19 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
         // Get current user permissions
         const user = users.find(u => u.id === userId)
         if (!user) return
-        
-        const currentPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {})
+
+        // Safety guard: Master Admin's permissions must be immutable
+        if (user.email === 'admin@gmail.com' || user.id === 1) {
+            return
+        }
+
+        const currentPermissions = (() => {
+            if (Array.isArray(user.permissions)) return user.permissions
+            if (user.permissions && typeof user.permissions === 'object') {
+                return Object.keys(user.permissions).filter((key) => user.permissions[key])
+            }
+            return []
+        })()
         
         // Show confirmation for critical permissions
         if (['delete', 'update'].includes(permission) && !isChecked) {
@@ -276,16 +287,23 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
             }
         }
         
+        const updatedPermissions = (() => {
+            if (isChecked) {
+                if (currentPermissions.includes(permission)) return currentPermissions
+                return [...currentPermissions, permission]
+            }
+            return currentPermissions.filter((p) => p !== permission)
+        })()
+
         // Send to backend
-        router.patch(route('users.update-permissions', userId), {
-            permission: permission,
-            value: isChecked ? 1 : 0
+        router.patch(route('users.updatePermissions', userId), {
+            permissions: updatedPermissions
         }, {
             preserveState: true,
             preserveScroll: true,
             onSuccess: () => {
                 // Force a page reload to get fresh data
-                router.reload({ only: ['users'] })
+                router.reload({ only: ['users'], preserveScroll: true })
             },
             onError: (error) => {
                 console.error('Permission update failed:', error)
@@ -310,14 +328,19 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
         })
         
         // Communicate with backend - use Inertia patch for real-time updates
-        router.patch(route('users.update-permissions', selectedUser.id), {
-            permission: name,
-            value: checked
+        router.patch(route('users.updatePermissions', selectedUser.id), {
+            permissions: (() => {
+                const current = Array.isArray(data.permissions) ? data.permissions : []
+                if (checked) {
+                    return current.includes(name) ? current : [...current, name]
+                }
+                return current.filter((p) => p !== name)
+            })()
         }, {
             preserveScroll: true,
             onSuccess: () => {
                 // Force a page reload to get fresh data
-                router.reload({ only: ['users'] })
+                router.reload({ only: ['users'], preserveScroll: true })
             },
             onError: (error) => {
                 console.error('Permission update failed:', error)
@@ -450,7 +473,7 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                 <Head title="Admin Dashboard" />
 
             <div className="py-12">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="max-w-full w-full mx-auto px-4 sm:px-6 lg:px-8">
                     
                     {/* Header - Fixed Layout: Left (Search) | Center (Filters) | Right (Actions) */}
                     <div className="flex items-center justify-between w-full mb-6 px-2 bg-white p-4 rounded-lg shadow-sm border border-gray-100">
@@ -584,9 +607,9 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                     </div>
 
                     {/* Table Container - Improved spacing and consistency */}
-                    {canRead ? (
+                    {canRead ? (<>                    
                         <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-                            <table className="min-w-full divide-y divide-gray-200">
+                            <table className="w-full min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-50">
                                     <tr>
                                         {/* Checkbox Column - Master Admin Only */}
@@ -603,7 +626,7 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
 
                                         {selectedUserIds.length > 0 ? (
                                             /* Contextual Action Bar - Improved styling */
-                                            <th colSpan="7" className="px-6 py-4 bg-indigo-50 border-l border-gray-200">
+                                            <th colSpan={isMasterAdmin ? 9 : 6} className="px-6 py-4 bg-indigo-50 border-l border-gray-200">
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex items-center gap-4">
                                                         <span className="text-indigo-700 font-semibold text-sm">{selectedUserIds.length} Selected</span>
@@ -651,7 +674,10 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                                     </button>
                                                 </th>
                                                 {isMasterAdmin && (
-                                                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Permissions</th>
+                                                    <>
+                                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Permissions</th>
+                                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Role Management</th>
+                                                    </>
                                                 )}
                                                 <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
                                             </>
@@ -660,8 +686,15 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                 </thead>
                             <tbody className="bg-white divide-y divide-gray-100">
                                 {finalDisplayUsers.map((user) => {
-                                    // Sanitize permissions data to always be an array
-                                    const userPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {});
+                                    const userPermissions = (() => {
+                                        if (Array.isArray(user.permissions)) return user.permissions
+                                        if (user.permissions && typeof user.permissions === 'object') {
+                                            return Object.keys(user.permissions).filter((key) => user.permissions[key])
+                                        }
+                                        return []
+                                    })()
+
+                                    const isProtectedUser = user.email === 'admin@gmail.com' || user.id === 1
                                     
                                     return (
                                         <tr key={user.id} className="hover:bg-gray-50 transition-colors">
@@ -732,6 +765,26 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                                             >
                                                                 {perm}
                                                             </span>
+                                                        ))}
+                                                    </div>
+                                                </td>
+                                            )}
+
+                                            {/* Role Management - Live Permissions Toggle (Master Admin Only) */}
+                                            {isMasterAdmin && (
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {['create', 'read', 'update', 'delete'].map((perm) => (
+                                                            <label key={perm} className="flex items-center gap-2">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                                                                    checked={userPermissions.includes(perm)}
+                                                                    disabled={isProtectedUser}
+                                                                    onChange={(e) => handlePermissionToggle(user.id, perm, e.target.checked)}
+                                                                />
+                                                                <span className="text-xs capitalize text-gray-700">{perm}</span>
+                                                            </label>
                                                         ))}
                                                     </div>
                                                 </td>
@@ -834,51 +887,9 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                 </div>
                             </div>
                         </div>
-                    )}
-
-                    {/* Horizontal Divider */}
-                    <hr className="my-10 border-gray-200" />
-
-                    {/* Role Management Section */}
-                    <div>
-                        {/* Role Management Header */}
-                        <div className="flex justify-between items-center w-full mb-6">
-                            <h3 className="text-lg font-bold text-gray-800">### Role Management</h3>
-                            <button className="h-10 px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-medium hover:bg-indigo-700 transition-colors flex items-center">
-                                + New Role
-                            </button>
                         </div>
 
-                        {/* Role Management Table */}
-                        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-                            <table className="min-w-full divide-y divide-gray-200">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Role Name</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-100">
-                                    {roles.map((role) => (
-                                        <tr key={role.id} className="hover:bg-gray-50 transition-colors">
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm font-medium text-gray-900">{role.name}</div>
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">{role.description}</div>
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                                                <button className="text-indigo-600 hover:text-indigo-900 font-medium">Edit</button>
-                                                <span className="mx-2 text-gray-300">|</span>
-                                                <button className="text-red-600 hover:text-red-900 font-medium">Delete</button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+                    </>
                     ) : (
                         <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-8 text-center">
                             <div className="text-gray-500">
@@ -957,14 +968,30 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                         </div>
                                     </div>
                                 )}
+
+                                <div className="flex justify-end space-x-3 pt-4">
+                                    <button
+                                        type="button"
+                                        onClick={closeModal}
+                                        className="px-6 py-2 text-gray-500 font-bold hover:text-gray-700 transition"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        className="px-6 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition"
+                                    >
+                                        Save
+                                    </button>
+                                </div>
                             </form>
                         )}
                     </div>
                 </div>
             )}
-                    {/* Role Management Table goes here inside the main div */}
                     </div> {/* Closes max-w-7xl */}
                 </div> {/* Closes py-12 */}
             </AuthenticatedLayout>
+        </>
         );
     }

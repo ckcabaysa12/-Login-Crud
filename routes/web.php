@@ -57,7 +57,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         // Explicitly ensuring the {user} parameter is captured correctly for Inertia
         Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
         Route::patch('/users/{user}/approve', [UserController::class, 'approve'])->name('users.approve');
-        Route::patch('/users/{user}/permissions', [UserController::class, 'updatePermissions'])->name('users.update-permissions');
+        Route::patch('/users/{user}/permissions', [UserController::class, 'updatePermissions'])->name('users.updatePermissions');
         Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
     });
 });

@@ -186,6 +186,67 @@ class UserController extends Controller
         $authenticatedUser = Auth::user();
         $isMasterAdmin = ($authenticatedUser->email === 'admin@gmail.com');
 
+        $allowedPermissions = ['create', 'read', 'update', 'delete'];
+        $targetIsProtected = ($user->email === 'admin@gmail.com' || $user->id === 1);
+
+        // Individual permission toggle support (permission/value only)
+        if ($request->has('permission') && $request->has('value')) {
+            if (!$isMasterAdmin) {
+                abort(403, 'Unauthorized.');
+            }
+
+            $request->validate([
+                'permission' => 'required|string|in:create,read,update,delete',
+                'value' => 'required', // may be 1/0 from frontend
+            ]);
+
+            if ($targetIsProtected) {
+                return redirect()->back()->with('message', 'Permissions unchanged.');
+            }
+
+            $permission = $request->input('permission');
+            $isChecked = filter_var($request->input('value'), FILTER_VALIDATE_BOOLEAN);
+
+            $currentPermissions = $user->permissions ?? [];
+            if (is_string($currentPermissions)) {
+                $currentPermissions = json_decode($currentPermissions, true) ?? [];
+            }
+
+            // Normalize current permissions into an array of enabled permission keys
+            $normalized = [];
+            if (is_array($currentPermissions)) {
+                $keys = array_keys($currentPermissions);
+                $isAssoc = $keys !== range(0, count($currentPermissions) - 1);
+
+                if ($isAssoc) {
+                    foreach ($allowedPermissions as $key) {
+                        if (!empty($currentPermissions[$key])) {
+                            $normalized[] = $key;
+                        }
+                    }
+                } else {
+                    foreach ($currentPermissions as $p) {
+                        if (in_array($p, $allowedPermissions, true)) {
+                            $normalized[] = $p;
+                        }
+                    }
+                }
+            }
+
+            if ($isChecked) {
+                if (!in_array($permission, $normalized, true)) {
+                    $normalized[] = $permission;
+                }
+            } else {
+                $normalized = array_values(array_diff($normalized, [$permission]));
+            }
+
+            $user->permissions = array_values($normalized);
+            $user->save();
+
+            return redirect()->back()->with('message', 'User permissions updated successfully.');
+        }
+
         $rules = [
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email,'.$user->id,
@@ -210,8 +271,31 @@ class UserController extends Controller
 
         if ($isMasterAdmin) {
             $user->role = $validated['role'];
-            // Handle permissions as array and convert to JSON for storage
-            $user->permissions = isset($validated['permissions']) ? $validated['permissions'] : [];
+            if (!$targetIsProtected) {
+                $rawPermissions = isset($validated['permissions']) ? $validated['permissions'] : [];
+
+                $normalizedPermissions = [];
+                if (is_array($rawPermissions)) {
+                    $keys = array_keys($rawPermissions);
+                    $isAssoc = $keys !== range(0, count($rawPermissions) - 1);
+
+                    if ($isAssoc) {
+                        foreach ($allowedPermissions as $key) {
+                            if (!empty($rawPermissions[$key])) {
+                                $normalizedPermissions[] = $key;
+                            }
+                        }
+                    } else {
+                        foreach ($rawPermissions as $p) {
+                            if (in_array($p, $allowedPermissions, true)) {
+                                $normalizedPermissions[] = $p;
+                            }
+                        }
+                    }
+                }
+
+                $user->permissions = array_values($normalizedPermissions);
+            }
         }
 
         $user->save();
@@ -286,36 +370,17 @@ class UserController extends Controller
      */
     public function updatePermissions(Request $request, User $user)
     {
-        // Validate the incoming request
+        // Safety Guard: do not change Master Admin permissions
+        if ($user->id === 1 || $user->email === 'admin@gmail.com') {
+            return back();
+        }
+
         $request->validate([
-            'permission' => 'required|string',
-            'value' => 'present', // 'present' ensures field exists even if it's false/0
+            'permissions' => 'required|array',
         ]);
 
-        $permission = $request->input('permission');
-        // Cast to boolean explicitly to handle the 1/0 from frontend
-        $isChecked = filter_var($request->value, FILTER_VALIDATE_BOOLEAN);
-
-        // Ensure permissions is cast as an array
-        $currentPermissions = $user->permissions ?? [];
-        
-        if (is_string($currentPermissions)) {
-            $currentPermissions = json_decode($currentPermissions, true) ?? [];
-        }
-
-        if ($isChecked) {
-            // Add permission if it's not already there
-            if (!in_array($permission, $currentPermissions)) {
-                $currentPermissions[] = $permission;
-            }
-        } else {
-            // Remove permission
-            $currentPermissions = array_diff($currentPermissions, [$permission]);
-        }
-
-        // Update user and reset array keys
         $user->update([
-            'permissions' => array_values($currentPermissions)
+            'permissions' => $request->permissions,
         ]);
 
         return back();
