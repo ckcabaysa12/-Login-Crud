@@ -11,7 +11,6 @@ export default function Register() {
         email: '',
         password: '',
         password_confirmation: '',
-        role: 'customer', // 1. Added default role here
     });
 
     const submit = (e) => {
@@ -61,24 +60,6 @@ export default function Register() {
                         required
                     />
                     <InputError message={errors.email} className="mt-2" />
-                </div>
-
-                {/* 2. Added the Role Selection Dropdown here */}
-                <div className="mt-4">
-                    <InputLabel htmlFor="role" value="Register As" />
-                    <select
-                        id="role"
-                        name="role"
-                        value={data.role}
-                        className="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm"
-                        onChange={(e) => setData('role', e.target.value)}
-                        required
-                    >
-                        <option value="customer">Customer</option>
-                        <option value="staff">Staff</option>
-                        <option value="admin">Admin</option>
-                    </select>
-                    <InputError message={errors.role} className="mt-2" />
                 </div>
 
                 <div className="mt-4">

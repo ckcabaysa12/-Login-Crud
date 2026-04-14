@@ -19,6 +19,7 @@ class DatabaseSeeder extends Seeder
         // We call the UserSeeder first to set up your Master Admin and test users
         $this->call([
             UserSeeder::class,
+            // RealisticUsersSeeder::class, // optional: php artisan db:seed --class=RealisticUsersSeeder
         ]);
 
         /* * Note: I removed the default User::factory() block here.

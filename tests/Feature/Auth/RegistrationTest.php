@@ -26,6 +26,10 @@ class RegistrationTest extends TestCase
         ]);
 
         $this->assertAuthenticated();
-        $response->assertRedirect(route('dashboard', absolute: false));
+        $response->assertRedirect(route('waiting.approval', absolute: false));
+
+        $this->assertDatabaseHas('user_management_activities', [
+            'action' => 'user_self_registered',
+        ]);
     }
 }

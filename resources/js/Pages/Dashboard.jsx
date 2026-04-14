@@ -1,6 +1,6 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout'
-import { Head, router, useForm } from '@inertiajs/react'
-import { useState, useEffect } from 'react'
+import { Head, Link, router, useForm, usePage } from '@inertiajs/react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 // Chevron Icon Component
 const ChevronIcon = ({ className }) => (
@@ -9,163 +9,218 @@ const ChevronIcon = ({ className }) => (
     </svg>
 )
 
-export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }) {
+const ACTIVITY_LABELS = {
+    user_created: 'Created user',
+    user_updated: 'Updated user',
+    user_approved: 'Approved user',
+    user_deleted: 'Deleted user',
+    users_bulk_deleted: 'Bulk deleted users',
+    user_self_registered: 'Registered (awaiting approval)',
+    user_logged_in: 'User logged in',
+}
 
-    // New test data for sorting verification
-    const users = [
-        {
-            id: 1,
-            name: 'Master Admin',
-            email: 'admin@gmail.com',
-            username: 'admin',
-            role: 'admin',
-            status: 'active',
-            permissions: ['create', 'read', 'update', 'delete'],
-            location: 'Lipa City, Batangas',
-            joinedDate: 'March 15, 2026'
-        },
-        {
-            id: 2,
-            name: 'Maria Santos',
-            email: 'maria@test.com',
-            username: 'mariasantos',
-            role: 'staff',
-            status: 'active',
-            permissions: ['create', 'read', 'update'],
-            location: 'Lipa City, Batangas',
-            joinedDate: 'February 10, 2026'
-        },
-        {
-            id: 3,
-            name: 'Juan Dela Cruz',
-            email: 'juan@test.com',
-            username: 'juandelacruz',
-            role: 'customer',
-            status: 'active',
-            permissions: ['read'],
-            location: 'Lipa City, Batangas',
-            joinedDate: 'January 05, 2026'
-        },
-        {
-            id: 4,
-            name: 'Elena Reyes',
-            email: 'elena@test.com',
-            username: 'elenareyes',
-            role: 'customer',
-            status: 'active',
-            permissions: ['read'],
-            location: 'Lipa City, Batangas',
-            joinedDate: 'March 01, 2026'
-        },
-        {
-            id: 5,
-            name: 'Ricardo Gomez',
-            email: 'ricardo@test.com',
-            username: 'ricardogomez',
-            role: 'staff',
-            status: 'active',
-            permissions: ['create', 'read', 'update'],
-            location: 'Lipa City, Batangas',
-            joinedDate: 'December 20, 2025'
-        },
-        {
-            id: 6,
-            name: 'Test Customer',
-            email: 'ccc@test.com',
-            username: 'ccctest',
-            role: 'customer',
-            status: 'active',
-            permissions: ['read'],
-            location: 'Lipa City, Batangas',
-            joinedDate: 'March 17, 2026'
+/** Inertia may expose list props as objects; partial reloads must still render. */
+function coerceListProp(raw) {
+    if (raw == null) return []
+    if (Array.isArray(raw)) return raw
+    if (typeof raw === 'object') return Object.values(raw)
+    return []
+}
+
+/** Checkbox state for the modal — mirrors backend permissionSlugs(). */
+function permissionsFromUserRecord(user) {
+    if (!user) return []
+    if (user.email === 'admin@gmail.com') {
+        return ['create', 'read', 'update', 'delete']
+    }
+    const p = user.permissions
+    if (Array.isArray(p)) {
+        return p.filter((x) => typeof x === 'string' && x !== '')
+    }
+    if (p && typeof p === 'object') {
+        return Object.entries(p)
+            .filter(([, v]) => v === true || v === 1 || v === '1')
+            .map(([k]) => k)
+    }
+    return []
+}
+
+/** When the role dropdown changes, pre-fill permission checkboxes (admin can still edit). */
+const ROLE_TEMPLATE_PERMISSIONS = {
+    admin: ['create', 'read', 'update', 'delete'],
+    staff: ['create', 'read'],
+    customer: [],
+    manager: ['create', 'read', 'update'],
+    viewer: ['read'],
+    support: ['read', 'update'],
+}
+
+const ROLE_FILTER_OPTIONS = [
+    { value: 'all', label: 'All' },
+    { value: 'admin', label: 'Admin' },
+    { value: 'staff', label: 'Staff' },
+    { value: 'customer', label: 'Customer' },
+    { value: 'manager', label: 'Manager' },
+    { value: 'viewer', label: 'Viewer' },
+    { value: 'support', label: 'Support' },
+]
+
+/** Laravel paginator from Inertia, or legacy plain array. */
+function normalizeUsersPaginator(raw) {
+    if (raw && Array.isArray(raw.data)) {
+        return raw
+    }
+    if (Array.isArray(raw)) {
+        return {
+            data: raw,
+            meta: {
+                current_page: 1,
+                last_page: 1,
+                from: raw.length ? 1 : 0,
+                to: raw.length,
+                total: raw.length,
+            },
+            links: [],
         }
-    ];
+    }
+    return {
+        data: [],
+        meta: { current_page: 1, last_page: 1, from: 0, to: 0, total: 0 },
+        links: [],
+    }
+}
+
+/** Laravel pagination labels often include HTML entities (&laquo;) and optional tags. */
+function decodePaginationLabel(html) {
+    if (typeof html !== 'string') return ''
+    if (typeof document === 'undefined') {
+        return html
+            .replace(/<[^>]*>/g, '')
+            .replace(/&laquo;/gi, '«')
+            .replace(/&raquo;/gi, '»')
+            .replace(/&lsaquo;/gi, '‹')
+            .replace(/&rsaquo;/gi, '›')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&#0*38;/g, '&')
+            .replace(/&amp;/gi, '&')
+            .replace(/&quot;/gi, '"')
+            .trim()
+    }
+    const t = document.createElement('textarea')
+    t.innerHTML = html
+    return t.value.trim()
+}
+
+export default function Dashboard({ auth, users: usersRaw, filters: filtersProp = {}, stats: statsProp = {}, activityLog: activityLogProp = [], isMasterAdmin }) {
 
     const currentUser = auth?.user || null
     const [modal, setModal] = useState(null)
     const [selectedUser, setSelectedUser] = useState(null)
-    const [openMenuId, setOpenMenuId] = useState(null) // Track which user's menu is open
-    const [searchTerm, setSearchTerm] = useState('') // Search term for filtering
-    const [selectedRole, setSelectedRole] = useState('All') // Role filter state
-    const [roleMenuOpen, setRoleMenuOpen] = useState(false) // Role dropdown toggle state
-    const [sortOrder, setSortOrder] = useState('newest') // 'newest' or 'oldest' for Joined Date
-    const [dateSortMenuOpen, setDateSortMenuOpen] = useState(false) // Date sort dropdown toggle state
-    const [selectedUserIds, setSelectedUserIds] = useState([]) // Track selected user IDs
+    const [openMenuId, setOpenMenuId] = useState(null)
+    const [roleMenuOpen, setRoleMenuOpen] = useState(false)
+    const [dateSortMenuOpen, setDateSortMenuOpen] = useState(false)
+    const [selectedUserIds, setSelectedUserIds] = useState([])
 
-    // Role Management State
-    const [selectedRoleIds, setSelectedRoleIds] = useState([]) // Track selected role IDs
-    const [roles] = useState([
-        { id: 1, name: 'Admin', description: 'Full system access', permissions: 'create, read, update, delete' },
-        { id: 2, name: 'Staff', description: 'Limited administrative access', permissions: 'create, read, update' },
-        { id: 3, name: 'Customer', description: 'Basic user access', permissions: 'read, update' },
-    ])
-
-    const { data, setData, post, patch, delete: destroy, processing, reset, clearErrors } = useForm({
+    const { data, setData, post, patch, delete: destroy, processing, reset, clearErrors, errors: formErrors } = useForm({
         name: '',
         email: '',
         username: '',
+        location: '',
         password: '',
         role: 'customer',
-        permissions: [], // Use array structure to match backend
+        status: 'pending',
+        permissions: [],
     })
 
-    // Strict visibility logic constants
-    const authUser = auth?.user || {};
-    const authPermissions = Array.isArray(authUser.permissions) ? authUser.permissions : [];
-    
-    // Master Admin identity check - hardcoded override
-    const isAdminIdentity = auth?.user?.email === 'admin@gmail.com';
+    const { props: pageProps } = usePage()
+    const activityLog = coerceListProp(pageProps.activityLog ?? activityLogProp)
+    const filters = pageProps.filters ?? filtersProp ?? {}
+    const stats = pageProps.stats ?? statsProp ?? {}
+    const usersPaginator = normalizeUsersPaginator(pageProps.users ?? usersRaw)
+    const pagedUsers = usersPaginator.data ?? []
+    const pg = usersPaginator
+    const meta = pg.meta ?? {}
+    const usersMeta = {
+        current_page: meta.current_page ?? pg.current_page ?? 1,
+        last_page: meta.last_page ?? pg.last_page ?? 1,
+        from: meta.from ?? pg.from ?? 0,
+        to: meta.to ?? pg.to ?? 0,
+        total: meta.total ?? pg.total ?? 0,
+    }
+    const rawLinks = pg.links
+    const paginationLinks = Array.isArray(rawLinks)
+        ? rawLinks
+        : (rawLinks && typeof rawLinks === 'object' ? Object.values(rawLinks) : [])
 
-    // The Gatekeeper: Can this person manage others?
-    const canManagePermissions = isAdminIdentity || authPermissions.includes('update');
+    const selectedRole = filters.role ?? 'all'
+    const sortOrder = filters.sort === 'oldest' ? 'oldest' : 'newest'
 
-    // Functional Permission Gates with Master Admin override
+    const [searchTerm, setSearchTerm] = useState(() => filters.search ?? '')
+    useEffect(() => {
+        setSearchTerm(filters.search ?? '')
+    }, [filters.search])
+
+    const visitDashboard = (overrides = {}) => {
+        router.get(
+            route('dashboard'),
+            {
+                search: overrides.search !== undefined ? overrides.search : searchTerm,
+                role: overrides.role !== undefined ? overrides.role : selectedRole,
+                sort: overrides.sort !== undefined ? overrides.sort : sortOrder,
+                page: overrides.page !== undefined ? overrides.page : 1,
+            },
+            {
+                preserveState: true,
+                preserveScroll: true,
+                replace: true,
+                only: ['users', 'filters', 'activityLog'],
+            },
+        )
+    }
+
+    const searchDebounceSkip = useRef(true)
+    useEffect(() => {
+        if (searchDebounceSkip.current) {
+            searchDebounceSkip.current = false
+            return
+        }
+        const id = setTimeout(() => {
+            visitDashboard({ page: 1 })
+        }, 400)
+        return () => clearTimeout(id)
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- only debounce search text
+    }, [searchTerm])
+
+    const refreshUsersAndActivity = useCallback(() => {
+        router.reload({ only: ['users', 'activityLog', 'filters'], preserveScroll: true })
+    }, [])
+
+    useEffect(() => {
+        const interval = setInterval(refreshUsersAndActivity, 5000)
+
+        return () => clearInterval(interval)
+    }, [refreshUsersAndActivity])
+
+    const authPermissions = Array.isArray(currentUser?.permissions) ? currentUser.permissions : []
+
+    const isAdminIdentity = currentUser?.email === 'admin@gmail.com'
+
     const canCreate = isAdminIdentity || authPermissions.includes('create');
     const canRead   = isAdminIdentity || authPermissions.includes('read');
     const canUpdate = isAdminIdentity || authPermissions.includes('update');
     const canDelete = isAdminIdentity || authPermissions.includes('delete');
 
-    // Display role with Master Admin override
-    const displayRole = isAdminIdentity ? 'admin' : authUser.role;
-    
-    // Full access check for UI elements
-    const hasFullAccess = isAdminIdentity || authUser.role === 'admin';
-
-    // Role badge styling function
     const getBadgeStyle = (role) => {
-        switch(role?.toLowerCase()) {
+        switch (role?.toLowerCase()) {
             case 'admin': return 'bg-purple-100 text-purple-700';
             case 'staff': return 'bg-blue-100 text-blue-700';
+            case 'manager': return 'bg-indigo-100 text-indigo-800';
+            case 'support': return 'bg-teal-100 text-teal-800';
+            case 'viewer': return 'bg-slate-100 text-slate-700';
             case 'customer': return 'bg-gray-100 text-gray-700';
             default: return 'bg-gray-100 text-gray-600';
         }
     };
-
-    // Role-to-permission mapping for automatic synchronization
-    const ROLE_MAPPING = {
-        admin: ['create', 'read', 'update', 'delete'],
-        staff: ['create', 'read'],
-        customer: ['update'], // Only update permission for customers
-    };
-
-    // Helper function to determine role for display (same logic as filter)
-    const getRoleToMatch = (user) => {
-        return user.email === 'admin@gmail.com' ? 'admin' : user.role.toLowerCase();
-    };
-
-    /* ------------------------------------------
-        AUTO REFRESH USERS
-    -------------------------------------------*/
-    useEffect(() => {
-        const interval = setInterval(() => {
-            router.reload({
-                only: ['users'],
-                preserveScroll: true,
-            })
-        }, 5000)
-
-        return () => clearInterval(interval)
-    }, [])
 
     // ESC key listener for modal closing
     useEffect(() => {
@@ -206,10 +261,6 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
         return () => document.removeEventListener('click', handleClickOutsideRoleMenu)
     }, [roleMenuOpen])
 
-    const toggleMenu = (userId) => {
-        setOpenMenuId(openMenuId === userId ? null : userId)
-    }
-
     const closeMenu = () => {
         setOpenMenuId(null)
     }
@@ -219,37 +270,31 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
     -------------------------------------------*/
     
     const handleRoleChange = (e) => {
-        const newRole = e.target.value;
-
-        // Update both role and permissions simultaneously
-        setData(prevData => ({
-            ...prevData,
-            role: newRole,
-            permissions: ROLE_MAPPING[newRole] || []
-        }));
-    };
+        const newRole = e.target.value
+        setData('role', newRole)
+        setData('permissions', ROLE_TEMPLATE_PERMISSIONS[newRole] ?? [])
+    }
 
     const openModal = (type, user = null) => {
         setSelectedUser(user)
-        
-        if (user) {
-            // Master Admin gets all permissions regardless of database
-            const isAdminUser = user.email === 'admin@gmail.com';
-            const userRole = isAdminUser ? 'admin' : (user.role || 'customer');
-            const userPermissions = isAdminUser ? ['create', 'read', 'update', 'delete'] : 
-                                          (Array.isArray(user.permissions) ? user.permissions : []);
+        clearErrors()
 
-            setData({
-                name: user.name || '',
-                email: user.email || '',
-                username: user.username || '',
-                password: '',
-                role: userRole,
-                permissions: userPermissions,
-            })
-        } else {
+        if (type === 'create' || !user) {
             reset()
+            setModal('create')
+            return
         }
+
+        const userRole = user.email === 'admin@gmail.com' ? 'admin' : (user.role || 'customer')
+
+        setData('name', user.name ?? '')
+        setData('email', user.email ?? '')
+        setData('username', user.username ?? '')
+        setData('location', user.location ?? '')
+        setData('password', '')
+        setData('role', userRole)
+        setData('status', user.status ?? 'pending')
+        setData('permissions', permissionsFromUserRecord(user))
         setModal(type)
     }
 
@@ -262,106 +307,30 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
         document.body.style.overflow = 'unset'
     }
 
-    const handlePermissionToggle = (userId, permission, isChecked) => {
-        // Get current user permissions
-        const user = users.find(u => u.id === userId)
-        if (!user) return
-        
-        const currentPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {})
-        
-        // Show confirmation for critical permissions
-        if (['delete', 'update'].includes(permission) && !isChecked) {
-            if (!confirm(`Are you sure you want to remove the ${permission} permission?`)) {
-                return
-            }
+    const confirmDelete = () => {
+        if (!selectedUser) return
+
+        // Prevent deletion of Master Admin
+        if (selectedUser.email === 'admin@gmail.com') {
+            alert('Cannot delete Master Admin user.')
+            return
         }
-        
-        // Send to backend
-        router.patch(route('users.update-permissions', userId), {
-            permission: permission,
-            value: isChecked ? 1 : 0
-        }, {
-            preserveState: true,
-            preserveScroll: true,
+
+        destroy(route('users.destroy', selectedUser.id), {
             onSuccess: () => {
-                // Force a page reload to get fresh data
-                router.reload({ only: ['users'] })
+                closeModal()
+                refreshUsersAndActivity()
             },
-            onError: (error) => {
-                console.error('Permission update failed:', error)
-            }
         })
     }
 
-    const handlePermissionChange = (e) => {
-        const { name, checked } = e.target
-        const permissionName = name.charAt(0).toUpperCase() + name.slice(1)
-        
-        // Show confirmation for critical permissions
-        if (['delete', 'update'].includes(name) && !checked) {
-            if (!confirm(`Are you sure you want to ${permissionName} this permission?`)) {
-                return
-            }
-        }
-        
-        setData('permissions', {
-            ...data.permissions,
-            [name]: checked
-        })
-        
-        // Communicate with backend - use Inertia patch for real-time updates
-        router.patch(route('users.update-permissions', selectedUser.id), {
-            permission: name,
-            value: checked
-        }, {
-            preserveScroll: true,
-            onSuccess: () => {
-                // Force a page reload to get fresh data
-                router.reload({ only: ['users'] })
-            },
-            onError: (error) => {
-                console.error('Permission update failed:', error)
-            }
-        })
-    }
-
-    /* ------------------------------------------
-        REAL-TIME SEARCH FILTERING
-    -------------------------------------------*/
-    const filteredUsers = users.filter((user) => {
-        // 1. Define strict role strings
-        const isMaster = user.email === 'admin@gmail.com';
-        const userRole = isMaster ? 'admin' : user.role?.toLowerCase().trim();
-        const activeFilter = selectedRole?.toLowerCase().trim();
-
-        // 2. Search match (Name or Email)
-        const matchesSearch = searchTerm === '' || (
-            user.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-            user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (user.location && user.location.toLowerCase().includes(searchTerm.toLowerCase()))
-        );
-
-        // 3. Strict Role match
-        const matchesRole = activeFilter === 'all' || userRole === activeFilter;
-
-        return matchesRole && matchesSearch;
-    });
-
-    // Sort users by Joined Date
-    const finalDisplayUsers = [...filteredUsers].sort((a, b) => {
-        const dateA = new Date(a.joinedDate || 'March 15, 2026');
-        const dateB = new Date(b.joinedDate || 'March 15, 2026');
-        return sortOrder === 'newest' ? dateB - dateA : dateA - dateB;
-    });
-
-    // Checkbox selection handlers
     const handleSelectAll = (e) => {
         if (e.target.checked) {
-            setSelectedUserIds(finalDisplayUsers.map(u => u.id));
+            setSelectedUserIds(pagedUsers.map((u) => u.id))
         } else {
-            setSelectedUserIds([]);
+            setSelectedUserIds([])
         }
-    };
+    }
 
     const handleSelectUser = (id) => {
         setSelectedUserIds(prev => 
@@ -369,76 +338,107 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
         );
     };
 
-    // Role selection handlers
-    const handleSelectAllRoles = (e) => {
-        if (e.target.checked) {
-            setSelectedRoleIds(roles.map(r => r.id));
-        } else {
-            setSelectedRoleIds([]);
-        }
-    };
-
-    const handleSelectRole = (id) => {
-        setSelectedRoleIds(prev => 
-            prev.includes(id) ? prev.filter(roleId => roleId !== id) : [...prev, id]
-        );
-    };
-
     const handleBulkDelete = () => {
-        // Filter out the Master Admin by email even if they are selected
-        const usersToDelete = selectedUserIds.filter(id => {
-            const user = users.find(u => u.id === id);
-            return user && user.email !== 'admin@gmail.com';
-        });
+        const usersToDelete = selectedUserIds.filter((id) => {
+            const user = pagedUsers.find((u) => u.id === id)
+            return user && user.email !== 'admin@gmail.com'
+        })
 
         if (usersToDelete.length === 0) {
-            alert('Cannot delete Master Admin user.');
-            return;
+            alert('No deletable users selected (Master Admin is protected).')
+            return
         }
 
-        if (window.confirm(`Are you sure you want to delete ${usersToDelete.length} users?`)) {
-            setUsers(prev => prev.filter(user => !usersToDelete.includes(user.id)));
-            setSelectedUserIds([]); // This will make the Delete button disappear automatically
-            
-            // Show success feedback
-            setTimeout(() => {
-                alert('Users deleted successfully.');
-            }, 100);
+        if (!window.confirm(`Delete ${usersToDelete.length} user(s)? This cannot be undone.`)) {
+            return
         }
-    };
+
+        router.post(route('users.bulk-destroy'), { ids: usersToDelete }, {
+            preserveScroll: true,
+            onSuccess: () => {
+                setSelectedUserIds([])
+                refreshUsersAndActivity()
+            },
+        })
+    }
 
     /* ------------------------------------------
         CRUD ACTIONS
     -------------------------------------------*/
     const submitCreate = (e) => {
         e.preventDefault()
-        post(route('users.store'), { onSuccess: closeModal })
+        post(route('users.store'), {
+            onSuccess: () => {
+                closeModal()
+                refreshUsersAndActivity()
+            },
+        })
     }
 
     const submitUpdate = (e) => {
         e.preventDefault()
-        const url = route('users.update', selectedUser.id)
-        patch(url, { preserveScroll: true, onSuccess: closeModal })
+        patch(route('users.update', selectedUser.id), {
+            onSuccess: () => {
+                closeModal()
+                refreshUsersAndActivity()
+            },
+            onError: (errors) => {
+                console.error('Update errors:', errors)
+                // Display errors to user
+                Object.keys(errors).forEach(key => {
+                    const errorElement = document.querySelector(`[name="${key}"]`)
+                    if (errorElement) {
+                        errorElement.classList.add('border-red-500')
+                        // You can add error message display here
+                    }
+                })
+            }
+        })
     }
 
     const submitApprove = (e) => {
         e.preventDefault()
-        const url = route('users.approve', selectedUser.id)
-        patch(url, { preserveScroll: true, onSuccess: closeModal })
+        patch(route('users.approve', selectedUser.id), {
+            onSuccess: () => {
+                closeModal()
+                refreshUsersAndActivity()
+            },
+        })
     }
 
-    const confirmDelete = (e) => {
-        e.preventDefault();
-        if (!selectedUser) return;
-        const url = route('users.destroy', selectedUser.id)
-        
-        destroy(url, {
-            preserveScroll: true,
-            onSuccess: () => {
-                closeModal();
-                router.visit(route('dashboard'));
-            }
-        })
+    const activitySummary = (entry) => {
+        const label = ACTIVITY_LABELS[entry.action] || entry.action
+        const target =
+            entry.subject?.email ||
+            entry.properties?.target_email ||
+            entry.properties?.email ||
+            (Array.isArray(entry.properties?.emails) && entry.properties.emails.length
+                ? `${entry.properties.emails.length} account(s)`
+                : null)
+        return target ? `${label}: ${target}` : label
+    }
+
+    const canManageRow = (user) => (
+        (user.status !== 'active' && isMasterAdmin)
+        || (user.status === 'active' && (
+            (canUpdate && user.can_update) || (canDelete && user.can_delete)
+        ))
+    )
+
+    if (!currentUser) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                <div className="bg-white p-8 rounded shadow text-center">
+                    <h1 className="text-red-600 font-bold text-xl">Session lost</h1>
+                    <a
+                        href="/login"
+                        className="mt-4 inline-block bg-indigo-600 text-white px-6 py-2 rounded font-bold"
+                    >
+                        Go to login
+                    </a>
+                </div>
+            </div>
+        )
     }
 
     return (
@@ -451,79 +451,88 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
 
             <div className="py-12">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    
-                    {/* Header - Fixed Layout: Left (Search) | Center (Filters) | Right (Actions) */}
-                    <div className="flex items-center justify-between w-full mb-6 px-2 bg-white p-4 rounded-lg shadow-sm border border-gray-100">
-                        {/* Left: Search Bar */}
-                        <div className="flex-1 max-w-md">
+                    {formErrors && Object.keys(formErrors).length > 0 && (
+                        <div
+                            role="alert"
+                            className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+                        >
+                            <p className="font-semibold">Could not save user</p>
+                            <ul className="mt-2 list-disc space-y-1 pl-5">
+                                {Object.entries(formErrors).map(([key, message]) => (
+                                    <li key={key}>{Array.isArray(message) ? message.join(' ') : message}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {canRead && (
+                        <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                            <div className="rounded-lg border border-gray-100 bg-white px-4 py-3 shadow-sm">
+                                <p className="text-xs uppercase tracking-wide text-gray-500">Total users</p>
+                                <p className="mt-1 text-xl font-semibold text-gray-900">{stats.total ?? 0}</p>
+                            </div>
+                            <div className="rounded-lg border border-green-100 bg-green-50 px-4 py-3 shadow-sm">
+                                <p className="text-xs uppercase tracking-wide text-green-700">Active</p>
+                                <p className="mt-1 text-xl font-semibold text-green-900">{stats.active ?? 0}</p>
+                            </div>
+                            <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 shadow-sm">
+                                <p className="text-xs uppercase tracking-wide text-amber-700">Pending</p>
+                                <p className="mt-1 text-xl font-semibold text-amber-900">{stats.pending ?? 0}</p>
+                            </div>
+                            <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 shadow-sm">
+                                <p className="text-xs uppercase tracking-wide text-slate-700">Inactive</p>
+                                <p className="mt-1 text-xl font-semibold text-slate-900">{stats.inactive ?? 0}</p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Toolbar: search (left) | filters (center) | actions (right) on large screens */}
+                    <div className="mb-6 w-full rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,22rem)_1fr_auto] lg:items-center lg:gap-6">
+                        {/* Search */}
+                        <div className="min-w-0 w-full">
                             <input 
                                 type="text"
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
-                                placeholder="Search items..." 
+                                placeholder="Search users…" 
                                 className="w-full h-10 px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
                             />
                         </div>
 
-                        {/* Center: Filters */}
-                        <div className="flex items-center gap-3">
-                            {/* Permissions Dropdown */}
-                            <div className="relative">
+                        {/* Filters */}
+                        <div className="flex flex-wrap items-center gap-3 min-w-0">
+                            <div className="relative role-dropdown">
                                 <button 
+                                    type="button"
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         setRoleMenuOpen(prev => !prev);
                                     }}
-                                    className="flex items-center justify-between w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white h-10 min-w-[140px]"
+                                    className="flex items-center justify-between w-full sm:w-auto px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white h-10 min-w-[180px]"
                                 >
                                     <span className="text-sm">
-                                        {selectedRole === 'All' ? 'Permissions: All' : `Permissions: ${selectedRole}`}
+                                        Role: {ROLE_FILTER_OPTIONS.find((r) => r.value === selectedRole)?.label ?? 'All'}
                                     </span>
                                     <ChevronIcon className="w-4 h-4 text-gray-400 ml-2" />
                                 </button>
                                 {roleMenuOpen && (
-                                    <div className="absolute top-full left-0 mt-1 w-40 bg-white shadow-lg rounded-md z-20 ring-1 ring-black ring-opacity-5">
-                                        <div className="py-1">
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedRole('all');
-                                                    setRoleMenuOpen(false);
-                                                }} 
-                                                className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
-                                            >
-                                                All
-                                            </button>
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedRole('admin');
-                                                    setRoleMenuOpen(false);
-                                                }} 
-                                                className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
-                                            >
-                                                Admin
-                                            </button>
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedRole('staff');
-                                                    setRoleMenuOpen(false);
-                                                }} 
-                                                className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
-                                            >
-                                                Staff
-                                            </button>
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedRole('customer');
-                                                    setRoleMenuOpen(false);
-                                                }} 
-                                                className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
-                                            >
-                                                Customer
-                                            </button>
+                                    <div className="absolute top-full left-0 mt-1 w-48 bg-white shadow-lg rounded-md z-20 ring-1 ring-black ring-opacity-5">
+                                        <div className="py-1 max-h-64 overflow-y-auto">
+                                            {ROLE_FILTER_OPTIONS.map((opt) => (
+                                                <button
+                                                    key={opt.value}
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation()
+                                                        visitDashboard({ role: opt.value, page: 1 })
+                                                        setRoleMenuOpen(false)
+                                                    }}
+                                                    className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
+                                                >
+                                                    {opt.label}
+                                                </button>
+                                            ))}
                                         </div>
                                     </div>
                                 )}
@@ -533,7 +542,7 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                             <div className="relative">
                                 <button 
                                     onClick={() => setDateSortMenuOpen(!dateSortMenuOpen)}
-                                    className="flex items-center justify-between w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white h-10 min-w-[140px]"
+                                    className="flex items-center justify-between w-full sm:w-auto px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white h-10 min-w-[140px]"
                                 >
                                     <span className="text-sm">Joined: {sortOrder === 'newest' ? 'Newest' : 'Oldest'}</span>
                                     <ChevronIcon className="w-4 h-4 text-gray-400 ml-2" />
@@ -544,7 +553,7 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                             <button 
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    setSortOrder('newest');
+                                                    visitDashboard({ sort: 'newest', page: 1 });
                                                     setDateSortMenuOpen(false);
                                                 }} 
                                                 className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
@@ -554,7 +563,7 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                             <button 
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    setSortOrder('oldest');
+                                                    visitDashboard({ sort: 'oldest', page: 1 });
                                                     setDateSortMenuOpen(false);
                                                 }} 
                                                 className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
@@ -567,319 +576,390 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                             </div>
                         </div>
 
-                        {/* Right: Action Buttons */}
-                        <div className="flex items-center gap-3">
-                            <button className="h-10 px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md font-medium hover:bg-gray-200 transition-colors flex items-center">
-                                Export
-                            </button>
+                        {/* Actions */}
+                        <div className="flex flex-wrap items-center gap-3 lg:justify-end lg:self-center">
+                            <a
+                                href={route('resume.pdf')}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="h-10 px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-md font-medium hover:bg-gray-200 transition-colors inline-flex items-center justify-center shrink-0"
+                            >
+                                Export PDF
+                            </a>
                             {canCreate && (
                                 <button
                                     onClick={() => openModal('create')}
-                                    className="h-10 px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-medium hover:bg-indigo-700 transition-colors flex items-center"
+                                    className="h-10 px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-medium hover:bg-indigo-700 transition-colors inline-flex items-center justify-center shrink-0"
                                 >
                                     + New User
                                 </button>
                             )}
                         </div>
+                        </div>
                     </div>
 
                     {/* Table Container - Improved spacing and consistency */}
                     {canRead ? (
-                        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-                            <table className="min-w-full divide-y divide-gray-200">
+                        <>
+                        <div className="space-y-3 lg:hidden">
+                            {pagedUsers.map((user) => {
+                                const userPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {})
+                                const canManageThisRow = canManageRow(user)
+
+                                return (
+                                    <div key={user.id} className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                                <p className="font-semibold text-gray-900">{user.name}</p>
+                                                <p className="text-sm text-gray-600">{user.email}</p>
+                                            </div>
+                                            {canManageThisRow && (
+                                                <div className="relative">
+                                                    <button
+                                                        type="button"
+                                                        aria-label="Open row actions"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            setOpenMenuId(openMenuId === user.id ? null : user.id)
+                                                        }}
+                                                        className="inline-flex h-9 w-9 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                                                    >
+                                                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                                                        </svg>
+                                                    </button>
+                                                    {openMenuId === user.id && (
+                                                        <div className="dropdown-menu absolute right-0 top-full z-50 mt-1 w-36 rounded-md bg-white py-1 shadow-lg ring-1 ring-black/5">
+                                                            {user.status !== 'active' ? (
+                                                                isMasterAdmin && (
+                                                                    <>
+                                                                        <button onClick={() => { openModal('approve', user); closeMenu(); }} className="block w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Approve</button>
+                                                                        <button onClick={() => { openModal('delete', user); closeMenu(); }} className="block w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-gray-100">Deny</button>
+                                                                    </>
+                                                                )
+                                                            ) : (
+                                                                <>
+                                                                    {canUpdate && user.can_update && (
+                                                                        <button onClick={() => { openModal('edit', user); closeMenu(); }} className="block w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Edit</button>
+                                                                    )}
+                                                                    {canDelete && user.can_delete && (
+                                                                        <button onClick={() => { openModal('delete', user); closeMenu(); }} className="block w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-gray-100">Delete</button>
+                                                                    )}
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-600">
+                                            <p><span className="font-medium text-gray-800">Role:</span> {user.role}</p>
+                                            <p><span className="font-medium text-gray-800">Status:</span> {user.status}</p>
+                                            <p className="col-span-2"><span className="font-medium text-gray-800">Location:</span> {user.location || '-'}</p>
+                                            <p className="col-span-2"><span className="font-medium text-gray-800">Joined:</span> {user.joinedDate}</p>
+                                            {isMasterAdmin && (
+                                                <p className="col-span-2 truncate"><span className="font-medium text-gray-800">Permissions:</span> {userPermissions.join(', ') || '-'}</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+
+                        <div className="hidden rounded-lg border border-gray-100 bg-white shadow-sm overflow-visible lg:block">
+                            <table className="w-full table-auto divide-y divide-gray-200">
                                 <thead className="bg-gray-50">
                                     <tr>
                                         {/* Checkbox Column - Master Admin Only */}
                                         {isMasterAdmin && (
-                                            <th className="px-6 py-4 text-left">
+                                            <th className="w-10 px-3 py-4 text-left">
                                                 <input 
                                                     type="checkbox" 
                                                     className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
                                                     onChange={handleSelectAll}
-                                                    checked={selectedUserIds.length === finalDisplayUsers.length && finalDisplayUsers.length > 0}
+                                                    checked={selectedUserIds.length === pagedUsers.length && pagedUsers.length > 0}
                                                 />
                                             </th>
                                         )}
-
                                         {selectedUserIds.length > 0 ? (
-                                            /* Contextual Action Bar - Improved styling */
-                                            <th colSpan="7" className="px-6 py-4 bg-indigo-50 border-l border-gray-200">
-                                                <div className="flex items-center justify-between">
-                                                    <div className="flex items-center gap-4">
-                                                        <span className="text-indigo-700 font-semibold text-sm">{selectedUserIds.length} Selected</span>
-                                                        <div className="h-4 w-px bg-gray-300"></div>
+                                            <>
+                                                {/* Contextual Action Bar - Improved styling */}
+                                                <th colSpan="7" className="px-6 py-4 bg-indigo-50 border-l border-gray-200">
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="flex items-center gap-4">
+                                                            <span className="text-indigo-700 font-semibold text-sm">{selectedUserIds.length} Selected</span>
+                                                            <div className="h-4 w-px bg-gray-300"></div>
+                                                            <button 
+                                                                onClick={handleBulkDelete} 
+                                                                className="text-red-600 font-semibold text-sm hover:text-red-800 transition-colors flex items-center gap-2"
+                                                            >
+                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                </svg>
+                                                                Delete Selected
+                                                            </button>
+                                                        </div>
                                                         <button 
-                                                            onClick={handleBulkDelete} 
-                                                            className="text-red-600 font-semibold text-sm hover:text-red-800 transition-colors flex items-center gap-2"
+                                                            onClick={() => setSelectedUserIds([])} 
+                                                            className="text-gray-500 text-sm hover:text-gray-700 transition-colors"
                                                         >
-                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                            </svg>
-                                                            Delete Selected
+                                                            Clear selection
                                                         </button>
                                                     </div>
-                                                    <button 
-                                                        onClick={() => setSelectedUserIds([])} 
-                                                        className="text-gray-500 text-sm hover:text-gray-700 transition-colors"
-                                                    >
-                                                        Clear selection
-                                                    </button>
-                                                </div>
-                                            </th>
+                                                </th>
+                                            </>
                                         ) : (
-                                            /* Standard Headers - Improved typography and spacing */
                                             <>
-                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Full Name</th>
-                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Email Address</th>
-                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Location</th>
-                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
-                                                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                                    <button 
-                                                        onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                                                        className="flex items-center gap-2 hover:text-gray-700 focus:outline-none transition-colors"
-                                                    >
-                                                        <span>Joined Date</span>
-                                                        {sortOrder === 'asc' ? (
-                                                            <svg className="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
-                                                                <path fillRule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 001.414 1.414l4-4a1 1 0 000-1.414l-4-4a1 1 0 00-1.414 0z" clipRule="evenodd" />
-                                                            </svg>
-                                                        ) : (
-                                                            <svg className="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
-                                                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                                                            </svg>
-                                                        )}
-                                                    </button>
+                                                {/* Standard Headers - Improved typography and spacing */}
+                                                <th className="px-3 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Full Name</th>
+                                                <th className="px-3 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Email Address</th>
+                                                <th className="px-3 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Location</th>
+                                                <th className="px-3 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                                                <th className="px-3 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                                    Joined Date
                                                 </th>
                                                 {isMasterAdmin && (
-                                                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Permissions</th>
+                                                    <th className="px-3 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Permissions</th>
                                                 )}
-                                                <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+                                                <th className="w-16 px-3 py-4 text-right text-xs font-semibold uppercase tracking-wider text-gray-600">Actions</th>
                                             </>
                                         )}
                                     </tr>
                                 </thead>
-                            <tbody className="bg-white divide-y divide-gray-100">
-                                {finalDisplayUsers.map((user) => {
-                                    // Sanitize permissions data to always be an array
-                                    const userPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {});
-                                    
-                                    return (
-                                        <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                                            {/* Checkbox Column - Master Admin Only */}
-                                            {isMasterAdmin && (
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <input 
-                                                        type="checkbox" 
-                                                        className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-                                                        onChange={() => handleSelectUser(user.id)}
-                                                        checked={selectedUserIds.includes(user.id)}
-                                                    />
+                                <tbody className="bg-white divide-y divide-gray-100">
+                                    {pagedUsers.map((user) => {
+                                        // Sanitize permissions data to always be an array
+                                        const userPermissions = Array.isArray(user.permissions) ? user.permissions : Object.values(user.permissions || {});
+                                     
+                                        const canManageThisRow = canManageRow(user)
+
+                                        return (
+                                            <tr key={user.id} className="transition-colors hover:bg-gray-50">
+                                                {/* Checkbox Column - Master Admin Only */}
+                                                {isMasterAdmin && (
+                                                    <td className="w-10 px-3 py-4 whitespace-nowrap">
+                                                        <input 
+                                                            type="checkbox" 
+                                                            className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                                                            onChange={() => handleSelectUser(user.id)}
+                                                            checked={selectedUserIds.includes(user.id)}
+                                                        />
+                                                    </td>
+                                                )}
+                                                
+                                                {/* Full Name with Avatar */}
+                                                <td className="px-3 py-4">
+                                                    <div className="flex items-center">
+                                                        <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center mr-3">
+                                                            <span className="text-indigo-600 font-semibold text-sm">
+                                                                {user.name.charAt(0).toUpperCase()}
+                                                            </span>
+                                                        </div>
+                                                        <div className="max-w-[170px] truncate text-sm font-medium text-gray-900">{user.name}</div>
+                                                    </div>
                                                 </td>
-                                            )}
-                                            
-                                            {/* Full Name with Avatar */}
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="flex items-center">
-                                                    <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center mr-3">
-                                                        <span className="text-indigo-600 font-semibold text-sm">
-                                                            {user.name.charAt(0).toUpperCase()}
+                                                
+                                                {/* Email Address */}
+                                                <td className="px-3 py-4">
+                                                    <div className="max-w-[220px] truncate text-sm text-gray-600">{user.email}</div>
+                                                </td>
+                                                
+                                                {/* Location */}
+                                                <td className="px-3 py-4">
+                                                    <div className="max-w-[160px] truncate text-sm text-gray-600">{user.location}</div>
+                                                </td>
+                                                
+                                                {/* Status */}
+                                                <td className="px-3 py-4 whitespace-nowrap">
+                                                    <div className="flex items-center">
+                                                        {/* Status Dot */}
+                                                        <div className={`w-2 h-2 rounded-full mr-2 ${
+                                                            user.status === 'active' ? 'bg-green-400' : 
+                                                            user.status === 'pending' ? 'bg-yellow-400' : 'bg-gray-400'
+                                                        }`}></div>
+                                                        <span className={`text-sm font-medium ${
+                                                            user.status === 'active' ? 'text-green-800' : 
+                                                            user.status === 'pending' ? 'text-yellow-800' : 'text-gray-800'
+                                                        }`}>
+                                                            {user.status.charAt(0).toUpperCase() + user.status.slice(1)}
                                                         </span>
                                                     </div>
-                                                    <div className="text-sm font-medium text-gray-900">{user.name}</div>
-                                                </div>
-                                            </td>
-                                            
-                                            {/* Email Address */}
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">{user.email}</div>
-                                            </td>
-                                            
-                                            {/* Location */}
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">{user.location}</div>
-                                            </td>
-                                            
-                                            {/* Status */}
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="flex items-center">
-                                                    {/* Status Dot */}
-                                                    <div className={`w-2 h-2 rounded-full mr-2 ${
-                                                        user.status === 'active' ? 'bg-green-400' : 
-                                                        user.status === 'pending' ? 'bg-yellow-400' : 'bg-gray-400'
-                                                    }`}></div>
-                                                    <span className={`text-sm font-medium ${
-                                                        user.status === 'active' ? 'text-green-800' : 
-                                                        user.status === 'pending' ? 'text-yellow-800' : 'text-gray-800'
-                                                    }`}>
-                                                        {user.status.charAt(0).toUpperCase() + user.status.slice(1)}
-                                                    </span>
-                                                </div>
-                                            </td>
-                                            
-                                            {/* Joined Date */}
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">{user.joinedDate}</div>
-                                            </td>
-                                            
-                                            {/* Permissions - Master Admin Only */}
-                                            {isMasterAdmin && (
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {userPermissions.map((perm, index) => (
-                                                            <span 
-                                                                key={index}
-                                                                className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getBadgeStyle(user.role)}`}
-                                                            >
-                                                                {perm}
-                                                            </span>
-                                                        ))}
-                                                    </div>
                                                 </td>
-                                            )}
-                                            
-                                            {/* Actions */}
-                                            <td className="px-6 py-4 whitespace-nowrap text-right">
-                                                <div className="relative">
-                                                    <button 
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setOpenMenuId(openMenuId === user.id ? null : user.id);
-                                                        }}
-                                                        className="p-1 text-gray-400 hover:text-gray-600 transition-colors rounded-md hover:bg-gray-100"
-                                                    >
-                                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                                                        </svg>
-                                                    </button>
-                                                    
-                                                    {/* Dropdown Menu */}
-                                                    {openMenuId === user.id && (
-                                                        <div className="absolute right-0 mt-2 w-32 bg-white shadow-lg rounded-md z-10 ring-1 ring-black ring-opacity-5">
-                                                            <div className="py-1">
-                                                                {user.status !== 'active' ? (
-                                                                    isMasterAdmin && (
-                                                                        <>
-                                                                            <button 
-                                                                                onClick={() => { openModal('approve', user); closeMenu(); }} 
-                                                                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                                                                            >
-                                                                                Approve
-                                                                            </button>
-                                                                            <button 
-                                                                                onClick={() => { openModal('delete', user); closeMenu(); }} 
-                                                                                className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
-                                                                            >
-                                                                                Deny
-                                                                            </button>
-                                                                        </>
-                                                                    )
-                                                                ) : (
-                                                                    <>
-                                                                        {canUpdate && (
-                                                                            <button 
-                                                                                onClick={() => { openModal('edit', user); closeMenu(); }} 
-                                                                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                                                                            >
-                                                                                Edit
-                                                                            </button>
+                                                
+                                                {/* Joined Date */}
+                                                <td className="px-3 py-4 whitespace-nowrap">
+                                                    <div className="text-sm text-gray-600">{user.joinedDate}</div>
+                                                </td>
+                                                
+                                                {/* Permissions - Master Admin Only */}
+                                                {isMasterAdmin && (
+                                                    <td className="px-3 py-4">
+                                                        <div className="max-w-[180px] truncate text-xs text-gray-700">{userPermissions.join(', ')}</div>
+                                                    </td>
+                                                )}
+                                                
+                                                {/* Actions */}
+                                                <td className="whitespace-nowrap px-3 py-4 text-right align-middle">
+                                                    {canManageThisRow && (
+                                                        <div className="relative flex justify-end">
+                                                            <button 
+                                                                type="button"
+                                                                aria-label="Open row actions"
+                                                                aria-expanded={openMenuId === user.id}
+                                                                aria-haspopup="menu"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setOpenMenuId(openMenuId === user.id ? null : user.id);
+                                                                }}
+                                                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
+                                                            >
+                                                                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                                                                </svg>
+                                                            </button>
+                                                            
+                                                            {/* Dropdown Menu */}
+                                                            {openMenuId === user.id && (
+                                                                <div className="dropdown-menu absolute right-0 top-full z-50 mt-1 w-36 rounded-md bg-white py-1 shadow-lg ring-1 ring-black/5">
+                                                                    <div className="py-1">
+                                                                        {user.status !== 'active' ? (
+                                                                            isMasterAdmin && (
+                                                                                <>
+                                                                                    <button 
+                                                                                        onClick={() => { openModal('approve', user); closeMenu(); }} 
+                                                                                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                                                                    >
+                                                                                        Approve
+                                                                                    </button>
+                                                                                    <button 
+                                                                                        onClick={() => { openModal('delete', user); closeMenu(); }} 
+                                                                                        className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
+                                                                                    >
+                                                                                        Deny
+                                                                                    </button>
+                                                                                </>
+                                                                            )
+                                                                        ) : (
+                                                                            <>
+                                                                                {canUpdate && user.can_update && (
+                                                                                    <button 
+                                                                                        onClick={() => { openModal('edit', user); closeMenu(); }} 
+                                                                                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                                                                    >
+                                                                                        Edit
+                                                                                    </button>
+                                                                                )}
+                                                                                {canDelete && user.can_delete && (
+                                                                                    <button 
+                                                                                        onClick={() => { openModal('delete', user); closeMenu(); }} 
+                                                                                        className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
+                                                                                    >
+                                                                                        Delete
+                                                                                    </button>
+                                                                                )}
+                                                                            </>
                                                                         )}
-                                                                        {canDelete && (
-                                                                            <button 
-                                                                                onClick={() => { openModal('delete', user); closeMenu(); }} 
-                                                                                className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
-                                                                            >
-                                                                                Delete
-                                                                            </button>
-                                                                        )}
-                                                                    </>
-                                                                )}
-                                                            </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     )}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                        
-                        {/* Footer Pagination */}
-                        <div className="bg-white rounded-lg shadow-sm border border-gray-100 mt-4 px-6 py-4">
-                            <div className="flex justify-between items-center">
-                                <div className="flex items-center space-x-2">
-                                    <span className="text-sm text-gray-700">Show</span>
-                                    <div className="relative">
-                                        <select className="appearance-none -webkit-appearance-none -moz-appearance-none px-3 py-1 pr-8 border border-gray-300 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white" style={{ WebkitAppearance: 'none', MozAppearance: 'none', msAppearance: 'none' }}>
-                                            <option>10</option>
-                                            <option>25</option>
-                                            <option>50</option>
-                                            <option>100</option>
-                                        </select>
-                                    </div>
-                                    <span className="text-sm text-gray-700">rows</span>
-                                </div>
-                                <div className="flex items-center space-x-2">
-                                    <button className="px-3 py-1 text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50" disabled>
-                                        Previous
-                                    </button>
-                                    <button className="px-3 py-1 text-sm bg-indigo-600 text-white rounded-md">1</button>
-                                    <button className="px-3 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded-md">2</button>
-                                    <button className="px-3 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded-md">3</button>
-                                    <button className="px-3 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded-md">...</button>
-                                    <button className="px-3 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded-md">10</button>
-                                    <button className="px-3 py-1 text-sm text-gray-700 hover:text-gray-700">
-                                        Next
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Horizontal Divider */}
-                    <hr className="my-10 border-gray-200" />
-
-                    {/* Role Management Section */}
-                    <div>
-                        {/* Role Management Header */}
-                        <div className="flex justify-between items-center w-full mb-6">
-                            <h3 className="text-lg font-bold text-gray-800">### Role Management</h3>
-                            <button className="h-10 px-5 py-2 bg-indigo-600 text-white text-sm rounded-md font-medium hover:bg-indigo-700 transition-colors flex items-center">
-                                + New Role
-                            </button>
-                        </div>
-
-                        {/* Role Management Table */}
-                        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-                            <table className="min-w-full divide-y divide-gray-200">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Role Name</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-100">
-                                    {roles.map((role) => (
-                                        <tr key={role.id} className="hover:bg-gray-50 transition-colors">
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm font-medium text-gray-900">{role.name}</div>
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="text-sm text-gray-600">{role.description}</div>
-                                            </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                                                <button className="text-indigo-600 hover:text-indigo-900 font-medium">Edit</button>
-                                                <span className="mx-2 text-gray-300">|</span>
-                                                <button className="text-red-600 hover:text-red-900 font-medium">Delete</button>
-                                            </td>
-                                        </tr>
-                                    ))}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-                    ) : (
+                        
+                        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-gray-100 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                            <p className="text-sm text-gray-600">
+                                {usersMeta.total === 0 ? (
+                                    'No users match the current filters.'
+                                ) : (
+                                    <>
+                                        Showing{' '}
+                                        <span className="font-medium text-gray-900">{usersMeta.from ?? 0}</span>
+                                        –
+                                        <span className="font-medium text-gray-900">{usersMeta.to ?? 0}</span>
+                                        {' '}of <span className="font-medium text-gray-900">{usersMeta.total}</span>
+                                        {' '}users
+                                        {filters.search || selectedRole !== 'all' ? ' (filtered)' : ''}
+                                        {' · '}
+                                        Page <span className="font-medium text-gray-900">{usersMeta.current_page}</span>
+                                        {' '}of <span className="font-medium text-gray-900">{usersMeta.last_page}</span>
+                                    </>
+                                )}
+                            </p>
+                            {paginationLinks.length > 0 && usersMeta.last_page > 1 && (
+                                <nav className="flex flex-wrap items-center justify-center gap-1" aria-label="Pagination">
+                                    {paginationLinks.map((link, idx) => (
+                                        link.url ? (
+                                            <Link
+                                                key={idx}
+                                                href={link.url}
+                                                preserveScroll
+                                                only={['users', 'filters', 'activityLog']}
+                                                className={`min-w-[2.25rem] rounded-md px-2 py-1.5 text-center text-sm font-medium ${
+                                                    link.active
+                                                        ? 'bg-indigo-600 text-white'
+                                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                                }`}
+                                            >
+                                                {decodePaginationLabel(link.label)}
+                                            </Link>
+                                        ) : (
+                                            <span
+                                                key={idx}
+                                                className="min-w-[2.25rem] cursor-default rounded-md px-2 py-1.5 text-center text-sm text-gray-400"
+                                            >
+                                                {decodePaginationLabel(link.label)}
+                                            </span>
+                                        )
+                                    ))}
+                                </nav>
+                            )}
+                        </div>
+                        </>
+                    ) : null}
+
+                    {canRead && (
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden mt-6">
+                            <div className="px-6 py-4 border-b border-gray-100 bg-gray-50">
+                                <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide">Activity log</h3>
+                                <p className="text-xs text-gray-500 mt-1">Recent user management actions (newest first).</p>
+                            </div>
+                            {activityLog.length === 0 ? (
+                                <p className="px-6 py-6 text-sm text-gray-500">No activity recorded yet.</p>
+                            ) : (
+                                <ul className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+                                    {activityLog.map((entry) => (
+                                        <li key={entry.id} className="px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                                            <div>
+                                                <p className="text-sm text-gray-900">{activitySummary(entry)}</p>
+                                                <p className="text-xs text-gray-500">
+                                                    {entry.actor ? (
+                                                        <>
+                                                            By <span className="font-medium text-gray-700">{entry.actor.name}</span>
+                                                            {entry.actor.email ? ` (${entry.actor.email})` : ''}
+                                                        </>
+                                                    ) : (
+                                                        'System'
+                                                    )}
+                                                    {entry.ip_address ? ` · ${entry.ip_address}` : ''}
+                                                </p>
+                                            </div>
+                                            <time className="text-xs text-gray-500 whitespace-nowrap sm:text-right" dateTime={entry.created_at}>
+                                                {entry.created_at_display}
+                                            </time>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    )}
+
+                    {!canRead ? (
                         <div className="bg-white rounded-lg shadow-sm border border-gray-100 p-8 text-center">
                             <div className="text-gray-500">
                                 <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -889,58 +969,150 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                 <p className="mt-1 text-sm text-gray-500">You don't have permission to view user information.</p>
                             </div>
                         </div>
-                    )}
+                    ) : null}
+                </div>
+            </div>
 
-            {/* Modal - Fixed positioning and structure */}
+            {/* Modal: flex column + scroll body so all fields fit on small viewports */}
             {modal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50" onClick={closeModal}>
-                    <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full m-4" onClick={(e) => e.stopPropagation()}>
-                        <h3 className="text-xl font-bold text-gray-900 mb-6 p-6 pb-0">
-                            {modal === 'create' && 'Add New Account'}
-                            {modal === 'edit' && `Update Profile: ${selectedUser?.name}`}
-                            {modal === 'approve' && `Approve User: ${selectedUser?.name}`}
-                            {modal === 'delete' && (selectedUser?.status === 'pending' ? 'Reject Application?' : 'Permanently Delete?') }
-                        </h3>
+                <div
+                    className="fixed inset-0 z-50 flex justify-center bg-black/50 p-2 sm:items-center sm:p-4"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="user-modal-title"
+                    onClick={closeModal}
+                >
+                    <div
+                        className="flex max-h-[min(100dvh,100vh)] w-full max-w-lg flex-col overflow-hidden rounded-xl bg-white shadow-xl sm:max-h-[90vh]"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="shrink-0 border-b border-gray-100 px-5 py-4 sm:px-6">
+                            <h3 id="user-modal-title" className="text-lg font-bold leading-snug text-gray-900 sm:text-xl">
+                                {modal === 'create' && 'Add new account'}
+                                {modal === 'edit' && `Edit user: ${selectedUser?.name}`}
+                                {modal === 'approve' && `Approve user: ${selectedUser?.name}`}
+                                {modal === 'delete' && (selectedUser?.status === 'pending' ? 'Reject application?' : 'Delete user?')}
+                            </h3>
+                        </div>
 
                         {modal === 'delete' ? (
-                            <div className="p-6 space-y-6 text-center">
-                                <p className="text-gray-600 leading-relaxed">
-                                    Are you sure you want to {selectedUser?.status === 'pending' ? 'deny access for' : 'remove'} <b>{selectedUser?.name}</b>? This action cannot be undone.
-                                </p>
-                                <div className="flex justify-center space-x-4 pt-4">
-                                    <button onClick={closeModal} className="px-6 py-2 text-gray-500 font-bold hover:text-gray-700 transition">Cancel</button>
-                                    <button onClick={confirmDelete} className="bg-red-600 text-white px-8 py-2 rounded-lg font-bold hover:bg-red-700 shadow-lg shadow-red-200 transition">
+                            <>
+                                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6">
+                                    <p className="text-center text-sm leading-relaxed text-gray-600 sm:text-base">
+                                        Are you sure you want to {selectedUser?.status === 'pending' ? 'deny access for' : 'remove'}{' '}
+                                        <span className="font-semibold text-gray-900">{selectedUser?.name}</span>? This cannot be undone.
+                                    </p>
+                                </div>
+                                <div className="flex shrink-0 justify-end gap-3 border-t border-gray-100 bg-gray-50 px-5 py-4 sm:px-6">
+                                    <button type="button" onClick={closeModal} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-200">
+                                        Cancel
+                                    </button>
+                                    <button type="button" onClick={confirmDelete} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">
                                         Confirm
                                     </button>
                                 </div>
-                            </div>
+                            </>
                         ) : (
-                            <form onSubmit={modal === 'create' ? submitCreate : (modal === 'approve' ? submitApprove : submitUpdate)} className="p-6 space-y-4">
+                            <form
+                                autoComplete="off"
+                                onSubmit={modal === 'create' ? submitCreate : (modal === 'approve' ? submitApprove : submitUpdate)}
+                                className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                            >
+                                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6">
                                 {modal !== 'approve' && (
-                                    <div className="space-y-4">
-                                        <input type="text" placeholder="Full Name" value={data.name} onChange={e => setData('name', e.target.value)} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500 focus:border-indigo-500" required />
-                                        <input type="email" placeholder="Email Address" value={data.email} onChange={e => setData('email', e.target.value)} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500 focus:border-indigo-500" required />
-                                        <input type="text" placeholder="Username" value={data.username} onChange={e => setData('username', e.target.value)} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500 focus:border-indigo-500" required />
-                                        <input type="password" placeholder="Password (leave blank to keep current)" value={data.password} onChange={e => setData('password', e.target.value)} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500 focus:border-indigo-500" />
+                                    <div className="space-y-3 sm:space-y-4">
+                                        <input
+                                            type="text"
+                                            name="manage_user_full_name"
+                                            placeholder="Full Name"
+                                            autoComplete="off"
+                                            value={data.name}
+                                            onChange={(e) => setData('name', e.target.value)}
+                                            className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                            required
+                                        />
+                                        <input
+                                            type="email"
+                                            name="manage_user_email"
+                                            placeholder="Email Address"
+                                            autoComplete="off"
+                                            value={data.email}
+                                            onChange={(e) => setData('email', e.target.value)}
+                                            className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                            required
+                                        />
+                                        <input
+                                            type="text"
+                                            name="manage_user_username"
+                                            placeholder="Username"
+                                            autoComplete="off"
+                                            value={data.username}
+                                            onChange={(e) => setData('username', e.target.value)}
+                                            className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                            required
+                                        />
+                                        <input
+                                            type="text"
+                                            name="manage_user_location"
+                                            placeholder="Location"
+                                            autoComplete="off"
+                                            value={data.location || ''}
+                                            onChange={(e) => setData('location', e.target.value)}
+                                            className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                        />
+                                        <input
+                                            type="password"
+                                            name="manage_user_password"
+                                            placeholder={modal === 'create' ? 'Password (required)' : 'Password (leave blank to keep current)'}
+                                            autoComplete="new-password"
+                                            value={data.password}
+                                            onChange={(e) => setData('password', e.target.value)}
+                                            className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                            required={modal === 'create'}
+                                        />
                                     </div>
                                 )}
                                 
-                                {isMasterAdmin && (
-                                    <div className="pt-4 space-y-4">
-                                        <label className="block text-sm font-bold text-gray-700">Assign Role</label>
-                                        <select value={data.role} onChange={handleRoleChange} className="w-full rounded-lg border-gray-300 focus:ring-indigo-500">
-                                            <option value="staff">Customer</option>
-                                            <option value="admin">Staff</option>
-                                            <option value="customer">Other</option>
+                                {isMasterAdmin && modal !== 'approve' && (
+                                    <div className="space-y-4 border-t border-gray-100 pt-4">
+                                        <label className="block text-sm font-bold text-gray-700">Role</label>
+                                        <select
+                                            value={data.role}
+                                            onChange={handleRoleChange}
+                                            className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                        >
+                                            <option value="admin">Administrator</option>
+                                            <option value="staff">Staff</option>
+                                            <option value="customer">Customer</option>
+                                            <option value="manager">Manager</option>
+                                            <option value="viewer">Viewer</option>
+                                            <option value="support">Support</option>
                                         </select>
+
+                                        {modal !== 'approve' && (
+                                            <>
+                                                <label className="block text-sm font-bold text-gray-700">Account status</label>
+                                                <select
+                                                    value={data.status}
+                                                    onChange={(e) => setData('status', e.target.value)}
+                                                    className="w-full rounded-lg border-gray-300 text-base focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                                >
+                                                    <option value="pending">Pending</option>
+                                                    <option value="active">Active</option>
+                                                    <option value="inactive">Inactive</option>
+                                                </select>
+                                            </>
+                                        )}
                                         
-                                        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                            <p className="text-xs font-bold uppercase text-gray-500 mb-3 tracking-widest">Permissions</p>
-                                            <div className="grid grid-cols-2 gap-3">
+                                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                                            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-gray-500">Permissions</p>
+                                            <p className="mb-3 text-xs text-gray-600">Checked abilities match what this user can do in the app (enforced on the server).</p>
+                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-3">
                                                 {['create', 'read', 'update', 'delete'].map((perm) => (
-                                                    <label key={perm} className="flex items-center gap-2">
+                                                    <label key={perm} className="flex cursor-pointer items-center gap-2 rounded-md bg-white px-2 py-2 ring-1 ring-gray-200">
                                                         <input 
                                                             type="checkbox"
+                                                            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                                                             checked={!!(data.permissions && data.permissions.includes(perm))}
                                                             onChange={(e) => {
                                                                 const checked = e.target.checked;
@@ -950,21 +1122,35 @@ export default function Dashboard({ auth, users: usersProp = [], isMasterAdmin }
                                                                 setData('permissions', updated);
                                                             }}
                                                         />
-                                                        <span className="capitalize">{perm}</span>
+                                                        <span className="text-sm capitalize text-gray-800">{perm}</span>
                                                     </label>
                                                 ))}
                                             </div>
                                         </div>
                                     </div>
                                 )}
+
+                                {modal === 'approve' && (
+                                    <p className="text-sm text-gray-600">
+                                        This will mark the account as active and verified for login.
+                                    </p>
+                                )}
+                                </div>
+
+                                <div className="flex shrink-0 justify-end gap-3 border-t border-gray-100 bg-gray-50 px-5 py-4 sm:px-6">
+                                    <button type="button" onClick={closeModal} className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-200">
+                                        Cancel
+                                    </button>
+                                    <button type="submit" disabled={processing} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-700 disabled:opacity-50">
+                                        {modal === 'approve' ? 'Approve now' : 'Save user'}
+                                    </button>
+                                </div>
                             </form>
                         )}
                     </div>
                 </div>
             )}
-                    {/* Role Management Table goes here inside the main div */}
-                    </div> {/* Closes max-w-7xl */}
-                </div> {/* Closes py-12 */}
-            </AuthenticatedLayout>
-        );
-    }
+        </AuthenticatedLayout>
+        </>
+    )
+}

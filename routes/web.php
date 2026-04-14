@@ -1,65 +1,76 @@
 <?php
 
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\ResumePdfController;
 use App\Http\Controllers\UserController;
-use App\Http\Controllers\Auth\AuthenticatedSessionController;
-use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
-// 1. Root Route - Handled with a clean redirect
 Route::get('/', function () {
     if (Auth::check()) {
-        return redirect()->route('dashboard');
+        /** @var \App\Models\User $user */
+        $user = Auth::user();
+        if ($user->status !== 'active' && $user->email !== 'admin@gmail.com') {
+            return redirect()->route('waiting.approval');
+        }
+
+        return $user->canAccessUserManagement()
+            ? redirect()->route('dashboard')
+            : redirect()->route('home');
     }
-    return Inertia::render('Welcome');
+
+    return redirect()->route('login');
 });
 
-// 2. Universal Auth Routes (Accessible to everyone logged in)
 Route::middleware('auth')->group(function () {
-    
-    // The "Waiting Room" for users who aren't active yet
     Route::get('/waiting-approval', function () {
         /** @var \App\Models\User $user */
         $user = Auth::user();
 
-        // If they are actually active or the Master Admin, send them to the dashboard
         if ($user->status === 'active' || $user->email === 'admin@gmail.com') {
-            return redirect()->route('dashboard');
+            return $user->canAccessUserManagement()
+                ? redirect()->route('dashboard')
+                : redirect()->route('home');
         }
-        
+
         return Inertia::render('Auth/WaitingForApproval');
     })->name('waiting.approval');
 
-    Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
-    
-    // Profile routes: Accessible even if status is 'pending'
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 });
 
-// 3. Restricted Routes (Only for Active accounts OR the Master Admin)
-Route::middleware(['auth', 'verified'])->group(function () {
-    
-    // Main Dashboard
-    Route::middleware('is_active')->group(function () {
-        Route::get('/dashboard', [UserController::class, 'index'])->name('dashboard');
-    });
+Route::middleware(['auth', 'verified', 'is_active', 'user_management_access', 'permission:read'])->group(function () {
+    Route::get('/dashboard', [UserController::class, 'dashboard'])->name('dashboard');
+    Route::get('/users-management', [UserController::class, 'dashboard'])->name('users.index');
 
-    // Admin & Master Admin Operations
-    Route::middleware(['admin', 'is_active'])->group(function () {
-        
-        // User Management CRUD
-        Route::get('/users-management', [UserController::class, 'usersManagement'])->name('users.index');
-        Route::post('/users', [UserController::class, 'store'])->name('users.store');
-        
-        // Explicitly ensuring the {user} parameter is captured correctly for Inertia
-        Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
-        Route::patch('/users/{user}/approve', [UserController::class, 'approve'])->name('users.approve');
-        Route::patch('/users/{user}/permissions', [UserController::class, 'updatePermissions'])->name('users.update-permissions');
-        Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
-    });
+    Route::get('/api/users', [UserController::class, 'apiIndex'])->name('api.users.index');
+    Route::get('/api/users/{user}', [UserController::class, 'apiShow'])->name('api.users.show');
+});
+
+Route::middleware(['auth', 'verified', 'is_active', 'permission:create'])->group(function () {
+    Route::post('/users', [UserController::class, 'store'])->name('users.store');
+});
+
+Route::middleware(['auth', 'verified', 'is_active', 'permission:update'])->group(function () {
+    Route::patch('/users/{user}', [UserController::class, 'update'])->name('users.update');
+});
+
+Route::middleware(['auth', 'verified', 'is_active', 'master_admin'])->group(function () {
+    Route::patch('/users/{user}/approve', [UserController::class, 'approve'])->name('users.approve');
+});
+
+Route::middleware(['auth', 'verified', 'is_active', 'permission:delete'])->group(function () {
+    Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+    Route::post('/users-bulk', [UserController::class, 'bulkDestroy'])->name('users.bulk-destroy');
+});
+
+Route::middleware(['auth', 'verified', 'is_active'])->group(function () {
+    Route::get('/home', fn () => Inertia::render('Home'))->name('home');
+    Route::get('/account-status', fn () => Inertia::render('AccountStatus'))->name('account.status');
+    Route::get('/resume/pdf', ResumePdfController::class)->name('resume.pdf');
 });
 
 require __DIR__.'/auth.php';

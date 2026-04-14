@@ -3,10 +3,11 @@ import ApplicationLogo from '@/Components/ApplicationLogo';
 import Dropdown from '@/Components/Dropdown';
 import NavLink from '@/Components/NavLink';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink';
-import { Link } from '@inertiajs/react';
+import { Link, usePage } from '@inertiajs/react';
 
 export default function AuthenticatedLayout({ user, header, children }) {
     const [showingNavigationDropdown, setShowingNavigationDropdown] = useState(false);
+    const canViewUserManagement = usePage().props.canViewUserManagement ?? false;
 
     return (
         <div className="min-h-screen bg-gray-100">
@@ -21,9 +22,17 @@ export default function AuthenticatedLayout({ user, header, children }) {
                             </div>
 
                             <div className="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex">
-                                <NavLink href={route('dashboard')} active={route().current('dashboard')}>
-                                    Dashboard
+                                <NavLink href={route('home')} active={route().current('home')}>
+                                    Home
                                 </NavLink>
+                                <NavLink href={route('profile.edit')} active={route().current('profile.edit')}>
+                                    Profile
+                                </NavLink>
+                                {canViewUserManagement && (
+                                    <NavLink href={route('dashboard')} active={route().current('dashboard') || route().current('users.index')}>
+                                        User management
+                                    </NavLink>
+                                )}
                             </div>
                         </div>
 
@@ -47,6 +56,9 @@ export default function AuthenticatedLayout({ user, header, children }) {
                                     </Dropdown.Trigger>
 
                                     <Dropdown.Content>
+                                        <Dropdown.Link href={route('profile.edit')}>
+                                            Profile
+                                        </Dropdown.Link>
                                         <Dropdown.Link href={route('logout')} method="post" as="button">
                                             Log Out
                                         </Dropdown.Link>
@@ -73,9 +85,17 @@ export default function AuthenticatedLayout({ user, header, children }) {
                 {/* Mobile Navigation Menu */}
                 <div className={(showingNavigationDropdown ? 'block' : 'hidden') + ' sm:hidden'}>
                     <div className="pt-2 pb-3 space-y-1">
-                        <ResponsiveNavLink href={route('dashboard')} active={route().current('dashboard')}>
-                            Dashboard
+                        <ResponsiveNavLink href={route('home')} active={route().current('home')}>
+                            Home
                         </ResponsiveNavLink>
+                        <ResponsiveNavLink href={route('profile.edit')} active={route().current('profile.edit')}>
+                            Profile
+                        </ResponsiveNavLink>
+                        {canViewUserManagement && (
+                            <ResponsiveNavLink href={route('dashboard')} active={route().current('dashboard') || route().current('users.index')}>
+                                User management
+                            </ResponsiveNavLink>
+                        )}
                     </div>
 
                     <div className="pt-4 pb-1 border-t border-gray-200">
@@ -85,7 +105,6 @@ export default function AuthenticatedLayout({ user, header, children }) {
                         </div>
 
                         <div className="mt-3 space-y-1">
-                            {/* CAUTION: Removed profile.edit link here too to prevent Ziggy Errors */}
                             <ResponsiveNavLink method="post" href={route('logout')} as="button">
                                 Log Out
                             </ResponsiveNavLink>

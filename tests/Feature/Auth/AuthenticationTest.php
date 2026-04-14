@@ -19,15 +19,24 @@ class AuthenticationTest extends TestCase
 
     public function test_users_can_authenticate_using_the_login_screen(): void
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create([
+            'role' => 'staff',
+            'permissions' => [
+                'create' => false,
+                'read' => true,
+                'update' => false,
+                'delete' => false,
+            ],
+        ]);
 
         $response = $this->post('/login', [
-            'email' => $user->email,
+            'login' => $user->email,
             'password' => 'password',
         ]);
 
         $this->assertAuthenticated();
         $response->assertRedirect(route('dashboard', absolute: false));
+        $this->assertNotNull($user->fresh()->last_login_at);
     }
 
     public function test_users_can_not_authenticate_with_invalid_password(): void
@@ -35,11 +44,32 @@ class AuthenticationTest extends TestCase
         $user = User::factory()->create();
 
         $this->post('/login', [
-            'email' => $user->email,
+            'login' => $user->email,
             'password' => 'wrong-password',
         ]);
 
         $this->assertGuest();
+    }
+
+    public function test_users_can_authenticate_with_username(): void
+    {
+        $user = User::factory()->create([
+            'permissions' => [
+                'create' => false,
+                'read' => false,
+                'update' => false,
+                'delete' => false,
+            ],
+        ]);
+
+        $response = $this->post('/login', [
+            'login' => $user->username,
+            'password' => 'password',
+        ]);
+
+        $this->assertAuthenticated();
+        $response->assertRedirect(route('home', absolute: false));
+        $this->assertNotNull($user->fresh()->last_login_at);
     }
 
     public function test_users_can_logout(): void

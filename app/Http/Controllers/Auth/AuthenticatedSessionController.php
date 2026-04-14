@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Support\UserManagementActivityLogger;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -39,8 +40,21 @@ class AuthenticatedSessionController extends Controller
         /** @var \App\Models\User $user */
         $user = Auth::user();
 
+        $user->forceFill([
+            'last_login_at' => now(),
+            'last_login_ip' => $request->ip(),
+        ])->save();
+
+        UserManagementActivityLogger::log(
+            $user,
+            'user_logged_in',
+            $user->id,
+            ['email' => $user->email],
+            $request
+        );
+
         // 4. Role-based and Status-based Redirection
-        
+
         // Always allow the Master Admin through to the dashboard
         if ($user->email === 'admin@gmail.com') {
             return redirect()->intended(route('dashboard'));
@@ -53,16 +67,11 @@ class AuthenticatedSessionController extends Controller
         }
 
         // 5. Active User Redirections
-        if ($user->role === 'admin') {
-            return redirect()->intended(route('dashboard')); 
-        } 
-        
-        if ($user->role === 'staff') {
-            // Ensure this route exists in your web.php or redirect to dashboard
-            return redirect()->intended('/staff-dashboard');
+        if ($user->canAccessUserManagement() && in_array('read', $user->permissionSlugs(), true)) {
+            return redirect()->intended(route('dashboard'));
         }
 
-        return redirect()->intended(route('dashboard'));
+        return redirect()->intended(route('home'));
     }
 
     /**

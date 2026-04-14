@@ -1,8 +1,14 @@
 <?php
 
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/user', function (Request $request) {
+/*
+|--------------------------------------------------------------------------
+| API routes (optional). Session-authenticated JSON lives under web.php as
+| /api/users so cookies and CSRF work with the same-origin SPA.
+|--------------------------------------------------------------------------
+*/
+
+Route::middleware('auth:sanctum')->get('/user', function (\Illuminate\Http\Request $request) {
     return $request->user();
-})->middleware('auth:sanctum');
+});

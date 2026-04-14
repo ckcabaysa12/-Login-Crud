@@ -2,322 +2,390 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\UserStoreRequest;
+use App\Http\Requests\UserUpdateRequest;
 use App\Models\User;
+use App\Models\UserManagementActivity;
+use App\Support\UserManagementActivityLogger;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
+use Inertia\Response;
 
 class UserController extends Controller
 {
-    /**
-     * Display the dashboard with a list of users.
-     * Permission: Master Admin sees everyone. Others see based on 'read' toggle.
-     */
-    public function index()
+    private const USERS_PER_PAGE = 10;
+
+    private function isMasterAdmin(?User $user): bool
     {
-        // Debug: Log the request method and URI
-        \Illuminate\Support\Facades\Log::info('Dashboard accessed', [
-            'method' => request()->method(),
-            'uri' => request()->path(),
-            'ajax' => request()->ajax(),
-            'inertia' => request()->header('X-Inertia'),
-        ]);
-        
-        $user = Auth::user();
-        
-        // Safety check: if somehow reached without auth, redirect to login
-        if (!$user) {
-            return redirect()->route('login');
-        }
+        return $user && $user->email === 'admin@gmail.com';
+    }
 
-        $isMasterAdmin = ($user->email === 'admin@gmail.com');
-        $isAdmin = ($user->role === 'admin' || $isMasterAdmin);
+    private function canReadUsers(User $actor): bool
+    {
+        return $actor->canAccessUserManagement() && (
+            $this->isMasterAdmin($actor) || in_array('read', $actor->permissionSlugs(), true)
+        );
+    }
 
-        // Logic: Check if user has 'read' permission toggle checked
-        $permissions = $user->permissions ?? [];
-        $hasReadPermission = isset($permissions['read']) && (bool)$permissions['read'] === true;
-        
-        // Master Admin or users with 'read' checkbox can see the list
-        $canReadAll = $isMasterAdmin || $hasReadPermission;
+    private function canCreateUsers(User $actor): bool
+    {
+        return $this->isMasterAdmin($actor) || in_array('create', $actor->permissionSlugs(), true);
+    }
 
-        $users = $canReadAll 
-            ? User::all() 
-            : User::where('id', $user->id)->get();
+    private function canUpdateUsers(User $actor): bool
+    {
+        return $this->isMasterAdmin($actor) || in_array('update', $actor->permissionSlugs(), true);
+    }
 
-        $mappedUsers = $users->map(function ($u) {
-            $permissions = is_string($u->permissions) ? json_decode($u->permissions, true) : ($u->permissions ?? []);
-            $canDelete = isset($permissions['delete']) && (bool)$permissions['delete'];
-            
-            return [
-                'id' => $u->id,
-                'name' => $u->name,
-                'email' => $u->email,
-                'username' => $u->username,
-                'status' => $u->status,
-                'role' => $u->role,
-                'joined_date' => $u->created_at ? $u->created_at->format('M d, Y') : 'N/A',
-                'permissions' => $permissions,
-                'can_delete' => $canDelete,
-            ];
-        });
-
-        // Route to appropriate view based on user role
-        if ($isMasterAdmin || $isAdmin) {
-            // Admin users get the Dashboard with user management
-            return Inertia::render('Dashboard', [
-                // --- FORCED AUTH BRIDGE ---
-                // This fixes "Session Lost" by passing user directly if middleware fails
-                'auth' => [
-                    'user' => [
-                        'id' => $user->id,
-                        'name' => $user->name,
-                        'email' => $user->email,
-                        'role' => $user->role,
-                        'permissions' => is_string($user->permissions) ? json_decode($user->permissions, true) : ($user->permissions ?? ['read' => false, 'create' => false, 'update' => false, 'delete' => false]),
-                    ],
-                ],
-                'users' => $mappedUsers,
-                'isMasterAdmin' => $isMasterAdmin,
-                'canReadAll' => $canReadAll, 
-            ]);
-        } else {
-            // Staff (Customer) users get the Customer Home view
-            return Inertia::render('Customer/Home', [
-                'auth' => [
-                    'user' => [
-                        'id' => $user->id,
-                        'name' => $user->name,
-                        'email' => $user->email,
-                        'role' => $user->role,
-                        'permissions' => is_string($user->permissions) ? json_decode($user->permissions, true) : ($user->permissions ?? ['read' => false, 'create' => false, 'update' => false, 'delete' => false]),
-                    ],
-                ],
-                'users' => $mappedUsers,
-                'isMasterAdmin' => $isMasterAdmin,
-                'canReadAll' => $canReadAll, 
-            ]);
-        }
+    private function canDeleteUsers(User $actor): bool
+    {
+        return $this->isMasterAdmin($actor) || in_array('delete', $actor->permissionSlugs(), true);
     }
 
     /**
-     * Display the user management interface (Admin only).
+     * @return array<string, mixed>
      */
-    public function usersManagement()
+    private function serializeUser(User $user, User $actor): array
     {
-        $user = Auth::user();
-        
-        if (!$user || $user->email !== 'admin@gmail.com') {
-            abort(403, 'Unauthorized.');
-        }
+        $perms = $user->permissionSlugs();
+        $targetIsMaster = $this->isMasterAdmin($user);
 
-        $users = User::all()->map(function ($u) {
-            return [
-                'id' => $u->id,
-                'name' => $u->name,
-                'email' => $u->email,
-                'username' => $u->username,
-                'status' => $u->status,
-                'role' => $u->role,
-                'joined_date' => $u->created_at ? $u->created_at->format('M d, Y') : 'N/A',
-                'permissions' => is_string($u->permissions) ? json_decode($u->permissions, true) : ($u->permissions ?? [
-                    'read' => false, 
-                    'create' => false, 
-                    'update' => false, 
-                    'delete' => false
-                ]),
-            ];
-        });
-
-        return Inertia::render('UsersManagement', [
-            'auth' => [
-                'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                    'role' => $user->role,
-                    'permissions' => is_string($user->permissions) ? json_decode($user->permissions, true) : ($user->permissions ?? ['read' => false, 'create' => false, 'update' => false, 'delete' => false]),
-                ],
-            ],
-            'users' => $users,
-            'isMasterAdmin' => true,
-        ]);
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'username' => $user->username,
+            'role' => $user->role,
+            'status' => $user->status,
+            'permissions' => $perms,
+            'location' => $user->location ?? '',
+            'joinedDate' => $user->created_at?->format('F j, Y') ?? '',
+            'can_update' => $this->isMasterAdmin($actor)
+                || ($this->canUpdateUsers($actor) && ! $targetIsMaster),
+            'can_delete' => $this->isMasterAdmin($actor)
+                || ($this->canDeleteUsers($actor) && ! $targetIsMaster),
+        ];
     }
 
     /**
-     * Store a new user (usually for Admin adding staff/customers manually).
+     * @return array<string, mixed>
      */
-    public function store(Request $request)
+    private function serializeActivity(UserManagementActivity $row): array
     {
-        $authenticatedUser = Auth::user();
-        
-        if (!$authenticatedUser || $authenticatedUser->email !== 'admin@gmail.com') {
-            abort(403, 'Unauthorized.');
-        }
+        $actor = $row->actor;
+        $subject = $row->subject;
 
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|string|email|max:255|unique:users',
-            'username' => 'required|string|max:255|unique:users',
-            'password' => 'required|string|min:8',
-            'role' => 'required|string',
-            'permissions' => 'required|array', 
-        ]);
-
-        User::create([
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'username' => $validated['username'],
-            'password' => Hash::make($validated['password']),
-            'role' => $validated['role'],
-            'status' => 'active', 
-            'permissions' => $validated['permissions'], 
-        ]);
-
-        return redirect()->back()->with('message', 'User created successfully!');
+        return [
+            'id' => $row->id,
+            'action' => $row->action,
+            'properties' => $row->properties ?? [],
+            'ip_address' => $row->ip_address,
+            'created_at' => $row->created_at?->toIso8601String(),
+            'created_at_display' => $row->created_at?->format('M j, Y g:i A') ?? '',
+            'actor' => $actor ? [
+                'id' => $actor->id,
+                'name' => $actor->name,
+                'email' => $actor->email,
+            ] : null,
+            'subject' => $subject ? [
+                'id' => $subject->id,
+                'name' => $subject->name,
+                'email' => $subject->email,
+            ] : null,
+        ];
     }
 
     /**
-     * SAVE Action: General profile updates or Admin editing a user.
+     * @return \Illuminate\Database\Eloquent\Builder<User>
      */
-    public function update(Request $request, User $user)
+    private function dashboardUsersQuery(Request $request): \Illuminate\Database\Eloquent\Builder
     {
-        $authenticatedUser = Auth::user();
-        $isMasterAdmin = ($authenticatedUser->email === 'admin@gmail.com');
+        $query = User::query();
 
-        $rules = [
-            'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email,'.$user->id,
-            'username' => 'required|string|max:255|unique:users,username,'.$user->id,
+        $search = trim((string) $request->input('search', ''));
+        if ($search !== '') {
+            $safe = '%'.addcslashes($search, '%_\\').'%';
+            $query->where(function ($q) use ($safe) {
+                $q->where('name', 'like', $safe)
+                    ->orWhere('email', 'like', $safe)
+                    ->orWhere('username', 'like', $safe)
+                    ->orWhere('location', 'like', $safe);
+            });
+        }
+
+        $allowedRoles = ['all', 'admin', 'staff', 'customer', 'manager', 'viewer', 'support'];
+        $role = strtolower(trim((string) $request->input('role', 'all')));
+        if (! in_array($role, $allowedRoles, true)) {
+            $role = 'all';
+        }
+
+        if ($role !== 'all') {
+            if ($role === 'admin') {
+                $query->where(function ($q) {
+                    $q->where('email', 'admin@gmail.com')
+                        ->orWhereRaw('LOWER(role) = ?', ['admin']);
+                });
+            } else {
+                $query->where('email', '!=', 'admin@gmail.com')
+                    ->whereRaw('LOWER(role) = ?', [$role]);
+            }
+        }
+
+        $sort = $request->input('sort', 'newest') === 'oldest' ? 'asc' : 'desc';
+        $query->orderBy('id', $sort);
+
+        return $query;
+    }
+
+    public function dashboard(Request $request): Response|RedirectResponse
+    {
+        $actor = $request->user();
+        if (! $this->canReadUsers($actor)) {
+            return redirect()->route('profile.edit');
+        }
+
+        $search = trim((string) $request->input('search', ''));
+        $allowedRoles = ['all', 'admin', 'staff', 'customer', 'manager', 'viewer', 'support'];
+        $role = strtolower(trim((string) $request->input('role', 'all')));
+        if (! in_array($role, $allowedRoles, true)) {
+            $role = 'all';
+        }
+
+        $sort = $request->input('sort', 'newest') === 'oldest' ? 'oldest' : 'newest';
+
+        $users = $this->dashboardUsersQuery($request)
+            ->paginate(self::USERS_PER_PAGE)
+            ->withQueryString()
+            ->through(fn (User $u) => $this->serializeUser($u, $actor));
+
+        $activityRows = UserManagementActivity::query()
+            ->with(['actor', 'subject'])
+            ->latest()
+            ->limit(75)
+            ->get()
+            ->map(fn (UserManagementActivity $a) => $this->serializeActivity($a));
+
+        $stats = [
+            'total' => User::query()->count(),
+            'active' => User::query()->where('status', 'active')->count(),
+            'pending' => User::query()->where('status', 'pending')->count(),
+            'inactive' => User::query()->where('status', 'inactive')->count(),
         ];
 
-        // Only Master Admin can change roles/permissions
-        if ($isMasterAdmin) {
-            $rules['role'] = 'required|string';
-            $rules['permissions'] = 'required|array';
-        }
-
-        $validated = $request->validate($rules);
-
-        if ($request->filled('password')) {
-            $user->password = Hash::make($request->password);
-        }
-
-        $user->name = $validated['name'];
-        $user->email = $validated['email'];
-        $user->username = $validated['username'];
-
-        if ($isMasterAdmin) {
-            $user->role = $validated['role'];
-            // Handle permissions as array and convert to JSON for storage
-            $user->permissions = isset($validated['permissions']) ? $validated['permissions'] : [];
-        }
-
-        $user->save();
-
-        // If permissions were updated, reload to refresh the UI
-        if ($isMasterAdmin && isset($validated['permissions'])) {
-            return redirect()->back()->with('message', 'User updated successfully.');
-        }
-
-        return redirect()->back()->with('message', 'User updated successfully.');
-    }
-
-    /**
-     * APPROVE Action
-     */
-    public function approve(Request $request, User $user)
-    {
-        $authenticatedUser = Auth::user();
-        
-        if (!$authenticatedUser || $authenticatedUser->email !== 'admin@gmail.com') {
-            abort(403, 'Unauthorized.');
-        }
-
-        $user->update([
-            'status' => 'active',
-            'role' => $request->role,
-            'permissions' => $request->permissions,
+        return Inertia::render('Dashboard', [
+            'users' => $users,
+            'stats' => $stats,
+            'filters' => [
+                'search' => $search,
+                'role' => $role,
+                'sort' => $sort,
+            ],
+            'activityLog' => $activityRows->values()->all(),
         ]);
-
-        return back()->with('message', 'User approved successfully!');
     }
 
-    /**
-     * DELETE Action
-     */
-    public function destroy(User $user)
+    public function apiIndex(Request $request): JsonResponse
     {
-        $authenticatedUser = Auth::user();
-        
-        // Master Admin can always delete
-        if ($authenticatedUser->email === 'admin@gmail.com') {
-            if ($user->email === 'admin@gmail.com') {
-                return redirect()->back()->withErrors(['error' => 'Cannot delete master admin.']);
-            }
-            $user->delete();
-            return redirect()->route('dashboard')->with('message', 'User deleted successfully.');
+        $actor = $request->user();
+        if (! $actor || ! $this->canReadUsers($actor)) {
+            abort(403);
         }
 
-        // Check if authenticated user has delete permission
-        $permissions = $authenticatedUser->permissions ?? [];
-        if (is_string($permissions)) {
-            $permissions = json_decode($permissions, true) ?? [];
-        }
-        
-        if (!isset($permissions['delete']) || !$permissions['delete']) {
-            abort(403, 'You do not have permission to delete users.');
+        $users = User::query()->orderByDesc('id')->get()->map(fn (User $u) => $this->serializeUser($u, $actor));
+
+        return response()->json($users->values()->all());
+    }
+
+    public function apiShow(Request $request, User $user): JsonResponse
+    {
+        $actor = $request->user();
+        if (! $actor || ! $this->canReadUsers($actor)) {
+            abort(403);
         }
 
-        if ($user->email === 'admin@gmail.com') {
-            return redirect()->back()->withErrors(['error' => 'Cannot delete master admin.']);
+        return response()->json($this->serializeUser($user, $actor));
+    }
+
+    public function store(UserStoreRequest $request): RedirectResponse
+    {
+        $actor = $request->user();
+        if (! $this->canCreateUsers($actor)) {
+            abort(403);
         }
+
+        $data = $request->validated();
+        if (! $this->isMasterAdmin($actor)) {
+            unset($data['role'], $data['permissions'], $data['status']);
+            $data['status'] = 'pending';
+            $data['role'] = 'customer';
+            $data['permissions'] = User::defaultPermissionsForRole('customer');
+        } else {
+            $data['permissions'] = User::normalizePermissionFlags(
+                $data['permissions'] ?? null,
+                $data['role'] ?? 'customer'
+            );
+        }
+
+        $created = User::create($data);
+
+        UserManagementActivityLogger::log(
+            $actor,
+            'user_created',
+            $created->id,
+            [
+                'name' => $created->name,
+                'email' => $created->email,
+            ],
+            $request,
+        );
+
+        return redirect()->back();
+    }
+
+    public function update(UserUpdateRequest $request, User $user): RedirectResponse
+    {
+        $actor = $request->user();
+
+        if ($this->isMasterAdmin($user) && ! $this->isMasterAdmin($actor)) {
+            abort(403);
+        }
+
+        if (! $this->isMasterAdmin($actor) && ! $this->canUpdateUsers($actor)) {
+            abort(403);
+        }
+
+        $data = $request->validated();
+        if ($data['password'] === null || $data['password'] === '') {
+            unset($data['password']);
+        }
+
+        if (! $this->isMasterAdmin($actor)) {
+            unset($data['role'], $data['permissions'], $data['status']);
+        } else {
+            $data['permissions'] = User::normalizePermissionFlags(
+                $data['permissions'] ?? null,
+                $data['role'] ?? $user->role
+            );
+        }
+
+        $user->update($data);
+        $user->refresh();
+
+        $updatedFields = collect($data)
+            ->except(['password'])
+            ->keys()
+            ->values()
+            ->all();
+
+        UserManagementActivityLogger::log(
+            $actor,
+            'user_updated',
+            $user->id,
+            [
+                'updated_fields' => $updatedFields,
+                'target_email' => $user->email,
+            ],
+            $request,
+        );
+
+        return redirect()->back();
+    }
+
+    public function approve(Request $request, User $user): RedirectResponse
+    {
+        $actor = $request->user();
+        if (! $this->isMasterAdmin($actor)) {
+            abort(403);
+        }
+
+        $user->forceFill([
+            'status' => 'active',
+            'email_verified_at' => $user->email_verified_at ?? now(),
+        ])->save();
+
+        UserManagementActivityLogger::log(
+            $actor,
+            'user_approved',
+            $user->id,
+            [
+                'email' => $user->email,
+            ],
+            $request,
+        );
+
+        return redirect()->back();
+    }
+
+    public function destroy(Request $request, User $user): RedirectResponse
+    {
+        $actor = $request->user();
+
+        if ($this->isMasterAdmin($user)) {
+            abort(403, 'Cannot delete the master admin account.');
+        }
+
+        if (! $this->isMasterAdmin($actor) && ! $this->canDeleteUsers($actor)) {
+            abort(403);
+        }
+
+        if ($user->id === $actor->id) {
+            abort(403);
+        }
+
+        UserManagementActivityLogger::log(
+            $actor,
+            'user_deleted',
+            $user->id,
+            [
+                'name' => $user->name,
+                'email' => $user->email,
+            ],
+            $request,
+        );
 
         $user->delete();
-        
-        // For Inertia.js, it's better to redirect to a specific route after DELETE
-        // This ensures a fresh GET request to load the updated state
-        return redirect()->route('dashboard')->with('message', 'User deleted successfully.');
+
+        return redirect()->back();
     }
 
-    /**
-     * UPDATE PERMISSIONS: Handle individual permission changes from frontend
-     */
-    public function updatePermissions(Request $request, User $user)
+    public function bulkDestroy(Request $request): RedirectResponse
     {
-        // Validate the incoming request
-        $request->validate([
-            'permission' => 'required|string',
-            'value' => 'present', // 'present' ensures field exists even if it's false/0
-        ]);
-
-        $permission = $request->input('permission');
-        // Cast to boolean explicitly to handle the 1/0 from frontend
-        $isChecked = filter_var($request->value, FILTER_VALIDATE_BOOLEAN);
-
-        // Ensure permissions is cast as an array
-        $currentPermissions = $user->permissions ?? [];
-        
-        if (is_string($currentPermissions)) {
-            $currentPermissions = json_decode($currentPermissions, true) ?? [];
+        $actor = $request->user();
+        if (! $this->isMasterAdmin($actor) && ! $this->canDeleteUsers($actor)) {
+            abort(403);
         }
 
-        if ($isChecked) {
-            // Add permission if it's not already there
-            if (!in_array($permission, $currentPermissions)) {
-                $currentPermissions[] = $permission;
-            }
-        } else {
-            // Remove permission
-            $currentPermissions = array_diff($currentPermissions, [$permission]);
+        $ids = $request->validate([
+            'ids' => ['required', 'array'],
+            'ids.*' => ['integer', 'exists:users,id'],
+        ])['ids'];
+
+        $targets = User::query()
+            ->whereIn('id', $ids)
+            ->where('email', '!=', 'admin@gmail.com')
+            ->where('id', '!=', $actor->id)
+            ->get();
+
+        User::query()
+            ->whereIn('id', $targets->pluck('id'))
+            ->delete();
+
+        if ($targets->isNotEmpty()) {
+            UserManagementActivityLogger::log(
+                $actor,
+                'users_bulk_deleted',
+                null,
+                [
+                    'count' => $targets->count(),
+                    'user_ids' => $targets->pluck('id')->values()->all(),
+                    'emails' => $targets->pluck('email')->values()->all(),
+                ],
+                $request,
+            );
         }
 
-        // Update user and reset array keys
-        $user->update([
-            'permissions' => array_values($currentPermissions)
-        ]);
-
-        return back();
+        return redirect()->back();
     }
 }
